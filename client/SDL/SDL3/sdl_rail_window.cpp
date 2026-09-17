@@ -117,7 +117,10 @@ void SdlRailWindow::updateWindowRect(const SDL_Rect& rect)
 		return;
 	/* A resize recreates the render target, so the content needs a full re-copy. */
 	if ((rect.w != _windowRect.w) || (rect.h != _windowRect.h))
+	{
 		_painted = false;
+		_needsFullBlit = true;
+	}
 	_windowRect = rect;
 	/* Mark dirty even if frozen/maximized so pending restore rect applies upon unfreeze. */
 	_geometryDirty = true;
@@ -726,21 +729,26 @@ bool SdlRailWindow::reconcile(SDL_Window* parent, const SDL_Rect& parentRect)
 
 	/* State first: maximized/minimized gates the geometry apply below. */
 	/* Hold geometry sync until server sends restored rect to prevent re-maximizing. */
-	if (applyServerState(_maxState, "maximize", SDL_MaximizeWindow))
+	const bool restored = applyServerState(_maxState, "maximize", SDL_MaximizeWindow);
+	if (restored)
+	{
 		_awaitRestoreUntil = SDL_GetTicks() + kAwaitRestoreRectMs;
+		_wasMaximized = false;
+		_appliedInsets = bandInsets();
+		_geometryDirty = true;
+		_needsFullBlit = true;
+	}
 	std::ignore = applyServerState(_minState, "minimize", SDL_MinimizeWindow);
-	const bool restorePending = restoreRectPending();
 
 	/* Update insets across maximize transitions outside active drag grab. */
 	const bool maxed = effectivelyMaximized();
-	if ((maxed != _wasMaximized) && !_localMoveActive && !restorePending)
+	if ((maxed != _wasMaximized) && !_localMoveActive)
 	{
 		_appliedInsets = bandInsets();
 		if (!maxed)
 			_geometryDirty = true;
 		_wasMaximized = maxed;
 	}
-
 	/* _GTK_FRAME_EXTENTS: tell the WM the band ring is frame, not content (snap/tile geometry). */
 	const SDL_Rect ext = bandInsets();
 	if (!SDL_RectsEqual(&ext, &_extentsApplied) &&
@@ -750,29 +758,25 @@ bool SdlRailWindow::reconcile(SDL_Window* parent, const SDL_Rect& parentRect)
 	/* Clamp min size hints to target bounds so stale hints do not block programmatic resize.
 	 * Defer size hints and programmatic resize during active WM move/resize grab. */
 	const bool wmOwnsGeometry =
-	    _localMoveActive || geometryFrozen() || _fullscreen || restorePending;
+	    _localMoveActive || geometryFrozen() || _fullscreen;
 	if ((_minMaxDirty || _geometryDirty) && !wmOwnsGeometry)
 	{
 		const SDL_Rect vis = targetOuterRect();
-		SDL_SetWindowMinimumSize(_win->window(), std::clamp(_minSize.x, 0, vis.w),
-		                         std::clamp(_minSize.y, 0, vis.h));
-		int maxW = (_maxSize.x > 0) ? std::max(1, _maxSize.x) : 0;
-		int maxH = (_maxSize.y > 0) ? std::max(1, _maxSize.y) : 0;
-		/* Wayland: cap to the usable area - an oversized window cannot be dragged into reach. */
-		SDL_Rect usable{};
-		if (!railPlatformCaps().positionsReadable &&
-		    SDL_GetDisplayUsableBounds(SDL_GetPrimaryDisplay(), &usable))
+		const SDL_Rect localVis = toLocal(vis);
+		const SDL_Point minS = toLocal(SDL_Point{ _minSize.x, _minSize.y });
+		const SDL_Point maxS = toLocal(SDL_Point{ _maxSize.x, _maxSize.y });
+		SDL_SetWindowMinimumSize(_win->window(), std::clamp(minS.x, 0, localVis.w),
+		                         std::clamp(minS.y, 0, localVis.h));
+		if (maxS.x > 0 || maxS.y > 0)
 		{
-			/* The local window is the outer frame: cap to the usable area plus the insets. */
-			const SDL_Rect bi = bandInsets();
-			const int capW = usable.w + bi.x + bi.w;
-			const int capH = usable.h + bi.y + bi.h;
-			if ((maxW == 0) || (maxW > capW))
-				maxW = capW;
-			if ((maxH == 0) || (maxH > capH))
-				maxH = capH;
+			int maxW = (maxS.x > 0) ? std::max(1, maxS.x) : 0;
+			int maxH = (maxS.y > 0) ? std::max(1, maxS.y) : 0;
+			SDL_SetWindowMaximumSize(_win->window(), maxW, maxH);
 		}
-		SDL_SetWindowMaximumSize(_win->window(), maxW, maxH);
+		else
+		{
+			SDL_SetWindowMaximumSize(_win->window(), 0, 0);
+		}
 		_minMaxDirty = false;
 	}
 
@@ -1042,10 +1046,14 @@ bool SdlRailWindow::restoreRectPending() const
 
 bool SdlRailWindow::effectivelyMaximized() const
 {
-	return _maxState.rail ||
-	       (_win && (SDL_GetWindowFlags(_win->window()) & SDL_WINDOW_MAXIMIZED) != 0);
+	if (!_maxState.rail)
+		return false;
+	if (_win && (SDL_GetWindowFlags(_win->window()) & (SDL_WINDOW_MAXIMIZED | SDL_WINDOW_FULLSCREEN)) != 0)
+		return true;
+	if (!_maxState.server)
+		return false;
+	return true;
 }
-
 bool SdlRailWindow::paint(SDL_Surface* primary, SDL_PixelFormat fallbackFormat,
                           const std::vector<SDL_Rect>& damage, SDL_Window* parent,
                           const SDL_Rect& parentRect)

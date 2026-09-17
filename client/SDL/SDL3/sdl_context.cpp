@@ -1152,6 +1152,13 @@ bool SdlContext::handleEvent(const SDL_WindowEvent& ev)
 					if (!_rail.suppressServerInput(ev.windowID))
 						_rail.invalidateWindow(ev.windowID);
 					return true;
+				case SDL_EVENT_WINDOW_ENTER_FULLSCREEN:
+					_rail.completeLocalMoveIfPending();
+					_rail.handleFullscreen(ev.windowID, true);
+					return true;
+				case SDL_EVENT_WINDOW_LEAVE_FULLSCREEN:
+					_rail.handleFullscreen(ev.windowID, false);
+					return true;
 				case SDL_EVENT_WINDOW_MAXIMIZED:
 					/* Maximize must complete move first. */
 					_rail.completeLocalMoveIfPending();

@@ -291,6 +291,53 @@ void SdlRail::handleRestored(SDL_WindowID id)
 	lock.unlock();
 	(void)sdl_push_user_event(SDL_EVENT_USER_UPDATE);
 }
+void SdlRail::handleFullscreen(SDL_WindowID id, bool enter)
+{
+	std::unique_lock lock(_windowsLock);
+	auto* appWindow = getWindowBySdlId(id);
+	if (!appWindow || appWindow->isPopup() || !appWindow->window())
+		return;
+
+	if (enter)
+	{
+		WLog_DBG(TAG, "local fullscreen enter id=0x%08" PRIx32, static_cast<UINT32>(appWindow->id()));
+		auto* settings = _context->context()->settings;
+		const int dw = static_cast<int>(freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth));
+		const int dh = static_cast<int>(freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight));
+		sendWorkArea({ 0, 0, dw, dh });
+
+		appWindow->setRailMaximized(true);
+		appWindow->invalidateAll();
+		sendSystemCommand(appWindow, SC_MAXIMIZE);
+	}
+	else
+	{
+		WLog_DBG(TAG, "local fullscreen leave id=0x%08" PRIx32, static_cast<UINT32>(appWindow->id()));
+		SDL_Rect usable{};
+		if (SDL_GetDisplayUsableBounds(SDL_GetPrimaryDisplay(), &usable))
+		{
+			const float s = SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay());
+			if (s > 1.0f && sdl::utils::isWaylandDriver())
+			{
+				usable = SDL_Rect{
+					static_cast<int>(std::round(usable.x * s)),
+					static_cast<int>(std::round(usable.y * s)),
+					static_cast<int>(std::round(usable.w * s)),
+					static_cast<int>(std::round(usable.h * s))
+				};
+			}
+			sendWorkArea(usable);
+		}
+
+		if (!appWindow->railMaximized())
+		{
+			sendSystemCommand(appWindow, SC_RESTORE);
+		}
+	}
+	lock.unlock();
+	(void)sdl_push_user_event(SDL_EVENT_USER_UPDATE);
+}
+
 
 void SdlRail::handleFocus(SDL_WindowID id, bool gained)
 {
@@ -389,7 +436,19 @@ bool SdlRail::paint(SDL_Surface* primary, SDL_PixelFormat fallbackFormat,
 	{
 		SDL_Rect usable{};
 		if (SDL_GetDisplayUsableBounds(SDL_GetPrimaryDisplay(), &usable))
+		{
+			const float s = SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay());
+			if (s > 1.0f && sdl::utils::isWaylandDriver())
+			{
+				usable = SDL_Rect{
+					static_cast<int>(std::round(usable.x * s)),
+					static_cast<int>(std::round(usable.y * s)),
+					static_cast<int>(std::round(usable.w * s)),
+					static_cast<int>(std::round(usable.h * s))
+				};
+			}
 			sendWorkArea(usable);
+		}
 	}
 
 	/* Cascade deletion to child popups whose SDL parent was deleted. */
@@ -1070,20 +1129,29 @@ void SdlRail::reportMaximizedWorkArea(SdlRailWindow* appWindow)
 	SDL_GetWindowSize(appWindow->window(), &w, &h);
 	if ((w <= 0) || (h <= 0))
 		return;
+	const SDL_Rect serverOuter = appWindow->toServer({ 0, 0, w, h });
+	int sw = serverOuter.w;
+	int sh = serverOuter.h;
 	int x = 0;
 	int y = 0;
 	if (railPlatformCaps().positionsReadable)
+	{
 		SDL_GetWindowPosition(appWindow->window(), &x, &y);
+		const SDL_Point sp = appWindow->toServer(SDL_Point{ x, y });
+		x = sp.x;
+		y = sp.y;
+	}
 
-	/* Clip work area within primary display bounds. */
-	SDL_Rect primary{};
-	if (!SDL_GetDisplayBounds(SDL_GetPrimaryDisplay(), &primary))
-		return;
-	const SDL_Rect area = { x, y, w, h };
+	/* Clip work area within desktop bounds (server coordinate space). */
+	auto* settings = _context->context()->settings;
+	const int dw = static_cast<int>(freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth));
+	const int dh = static_cast<int>(freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight));
+	const SDL_Rect desktopBounds = { 0, 0, dw, dh };
+	const SDL_Rect area = { x, y, sw, sh };
 	SDL_Rect overlap{};
-	if (!SDL_GetRectIntersection(&area, &primary, &overlap) || !SDL_RectsEqual(&overlap, &area))
+	if (!SDL_GetRectIntersection(&area, &desktopBounds, &overlap))
 		return;
-	sendWorkArea(area);
+	sendWorkArea(overlap);
 }
 
 void SdlRail::syncGeometry(SDL_WindowID id)
@@ -1092,6 +1160,39 @@ void SdlRail::syncGeometry(SDL_WindowID id)
 	auto* w = getWindowBySdlId(id);
 	if (!w || !w->window() || w->isDeleted() || w->isPopup())
 		return;
+
+	int lw = 0;
+	int lh = 0;
+	SDL_GetWindowSize(w->window(), &lw, &lh);
+	if ((lw <= 0) || (lh <= 0))
+		return;
+
+	const SDL_Rect localOuter = { 0, 0, lw, lh };
+	const SDL_Rect serverOuter = w->toServer(localOuter);
+	const int sw = serverOuter.w;
+	const int sh = serverOuter.h;
+
+	/* Detect local un-maximize / shrink:
+	 * In Wayland tiling compositors (e.g. niri), shrinking a maximized window or tiling
+	 * it into a smaller column does NOT emit SDL_EVENT_WINDOW_RESTORED.
+	 * If the window was rail-maximized but now lacks the maximized/fullscreen flag,
+	 * or its physical size is significantly smaller than the work area,
+	 * we must send SC_RESTORE to Windows so the server exits the maximize state
+	 * and accepts the new smaller geometry.
+	 */
+	const Uint32 winFlags = SDL_GetWindowFlags(w->window());
+	const bool hasMaxFlag = (winFlags & (SDL_WINDOW_MAXIMIZED | SDL_WINDOW_FULLSCREEN)) != 0;
+	const bool coversWorkArea = (_sentWorkArea.w > 0 && _sentWorkArea.h > 0) &&
+	                            (sw >= _sentWorkArea.w - 32) && (sh >= _sentWorkArea.h - 32);
+
+	if (w->railMaximized() && (!hasMaxFlag || !coversWorkArea))
+	{
+		WLog_DBG(TAG, "local shrink/unmaximize detected id=0x%08" PRIx32 " %dx%d -> SC_RESTORE",
+		         static_cast<UINT32>(w->id()), sw, sh);
+		w->setRailMaximized(false);
+		w->setServerMaximized(false);
+		sendSystemCommand(w, SC_RESTORE);
+	}
 
 	/* Geometry is server/WM-owned when maximized or minimized. */
 	if (w->effectivelyMaximized())
@@ -1107,19 +1208,12 @@ void SdlRail::syncGeometry(SDL_WindowID id)
 	if (w->localMoveActive() || (_localMove.id == wid) || w->loopEndPending() ||
 	    w->stateTransitionPending() || w->awaitingRestoreRect())
 		return;
-
-	int lw = 0;
-	int lh = 0;
-	SDL_GetWindowSize(w->window(), &lw, &lh);
-	if ((lw <= 0) || (lh <= 0))
-		return;
-
 	/* Ignore invalid zero-content window size updates. */
 	const SDL_Rect ins = w->insets();
-	if (((lw - ins.x - ins.w) <= 0) || ((lh - ins.y - ins.h) <= 0))
+	if (((sw - ins.x - ins.w) <= 0) || ((sh - ins.y - ins.h) <= 0))
 	{
-		WLog_DBG(TAG, "geometry sync id=0x%08" PRIx32 " %dx%d dropped (content collapsed)", wid, lw,
-		         lh);
+		WLog_DBG(TAG, "geometry sync id=0x%08" PRIx32 " %dx%d dropped (content collapsed)", wid, sw,
+		         sh);
 		return;
 	}
 
@@ -1128,29 +1222,62 @@ void SdlRail::syncGeometry(SDL_WindowID id)
 	int lx = vis.x;
 	int ly = vis.y;
 	if (posKnown)
-		SDL_GetWindowPosition(w->window(), &lx, &ly);
+	{
+		int cx = 0;
+		int cy = 0;
+		SDL_GetWindowPosition(w->window(), &cx, &cy);
+		const SDL_Point sp = w->toServer(SDL_Point{ cx, cy });
+		lx = sp.x;
+		ly = sp.y;
+	}
 	else
-		clampIntoDesktop(lx, ly, lw, lh);
+		clampIntoDesktop(lx, ly, sw, sh);
 
 	/* Check if window settled at applied target. */
-	if ((lw == vis.w) && (lh == vis.h) && (!posKnown || ((lx == vis.x) && (ly == vis.y))))
+	if ((sw == vis.w) && (sh == vis.h) && (!posKnown || ((lx == vis.x) && (ly == vis.y))))
 	{
 		w->clearGeomApplyPending();
 		return; /* Ignore self-echo when geometry converged. */
 	}
 
-	/* Drop transient echo events while client geometry application is in flight. */
+	/* Drop transient echo events while client geometry application is in flight.
+	 *
+	 * [Design Rationale & Trade-off]:
+	 * Upstream PR originally guarded this with:
+	 *   const bool overtaken = !posKnown && ((sw > vis.w) || (sh > vis.h));
+	 *   if (!overtaken) return;
+	 * The author's original intention for traditional floating Wayland compositors
+	 * (e.g. GNOME Mutter, KDE KWin) was to prevent stale in-flight configure events
+	 * (which carry an older, smaller dimension while an expansion resize is settling)
+	 * from erroneously rolling back the requested size.
+	 *
+	 * However, in tiling Wayland compositors (such as niri, sway, Hyprland) or when
+	 * a user shortcut triggers an immediate down-scale/column split (e.g. switching
+	 * from full-width column to half-screen column via Mod+F before any enlargement):
+	 * the compositor authoritatively allocates a SMALLER window width (sw < vis.w).
+	 * If we drop all (sw <= vis.w && sh <= vis.h) configure events as "transient echoes",
+	 * the user's first shrink/tile operation gets silently eaten until an expansion
+	 * happens to clear geomApplyPending.
+	 *
+	 * Therefore, for Wayland (!posKnown), when the dimensions differ from the converged
+	 * target (checked above at sw == vis.w && sh == vis.h), we treat the configure event
+	 * as an authoritative compositor tiling/resize decision, clear geomApplyPending,
+	 * and immediately sync the geometry to the Windows server.
+	 */
 	if (w->geomApplyPending())
 	{
-		/* Allow live Wayland compositor resize to advance beyond in-flight apply. */
-		const bool overtaken = !posKnown && ((lw > vis.w) || (lh > vis.h));
-		if (!overtaken)
+		if (!posKnown)
+		{
+			w->clearGeomApplyPending();
+		}
+		else
+		{
 			return;
-		w->clearGeomApplyPending();
+		}
 	}
 
-	WLog_DBG(TAG, "geometry sync id=0x%08" PRIx32 " local=%d,%d %dx%d (sync)", wid, lx, ly, lw, lh);
-	reportAndAdopt(w, lx, ly, lw, lh);
+	WLog_DBG(TAG, "geometry sync id=0x%08" PRIx32 " local=%d,%d %dx%d (sync)", wid, lx, ly, sw, sh);
+	reportAndAdopt(w, lx, ly, sw, sh);
 }
 
 void SdlRail::noteResizeGrab(SDL_WindowID id)

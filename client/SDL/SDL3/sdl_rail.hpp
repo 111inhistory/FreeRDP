@@ -81,6 +81,7 @@ class SdlRail
 	void handleMinimized(SDL_WindowID id);
 	void handleRestored(SDL_WindowID id);
 	void handleClose(SDL_WindowID id);
+	void handleFullscreen(SDL_WindowID id, bool enter);
 	/* Local focus change: send ClientActivate, like xf FocusIn/FocusOut. */
 	void handleFocus(SDL_WindowID id, bool gained);
 	/* Activate window on server if not already active. */
