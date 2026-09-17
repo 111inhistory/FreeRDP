@@ -140,6 +140,11 @@ class SdlRailWindow
 	/* Inverse of outerRect(): strip insets() off a local outer rect to recover the server rect. */
 	[[nodiscard]] SDL_Rect serverRect(const SDL_Rect& outer) const;
 
+	[[nodiscard]] float contentScale() const;
+	[[nodiscard]] SDL_Rect toLocal(const SDL_Rect& r) const;
+	[[nodiscard]] SDL_Rect toServer(const SDL_Rect& r) const;
+	[[nodiscard]] SDL_Point toLocal(const SDL_Point& p) const;
+	[[nodiscard]] SDL_Point toServer(const SDL_Point& p) const;
 	void setStyle(uint32_t style, uint32_t exStyle);
 	void setTitle(const std::string& title);
 	void setVisible(bool visible);

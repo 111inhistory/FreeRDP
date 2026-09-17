@@ -17,6 +17,7 @@
  * limitations under the License.
  */
 #include <algorithm>
+#include <cmath>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -1186,11 +1187,10 @@ void SdlRail::handleWaylandResize(SDL_WindowID id)
 	if ((w <= 0) || (h <= 0))
 		return;
 
-	/* Local window size is the OUTER frame (rect + insets; identical off the inset paths). */
+	const SDL_Rect serverOuter = appWindow->toServer({ 0, 0, w, h });
 	const SDL_Rect vis = appWindow->outerRect();
-	if ((w == vis.w) && (h == vis.h))
+	if ((serverOuter.w == vis.w) && (serverOuter.h == vis.h))
 		return; /* echo of a size we already reported/applied - nothing new */
-
 	/* Compositor snap/tile: report via the debounced sync (never from transitional state). */
 	lock.unlock();
 	syncGeometry(id);
@@ -1231,14 +1231,17 @@ void SdlRail::completeWaylandResize(bool definitive)
 	int w = 0;
 	int h = 0;
 	SDL_GetWindowSize(appWindow->window(), &w, &h);
+	const SDL_Rect serverOuter = appWindow->toServer({ 0, 0, w, h });
+	const int sw = serverOuter.w;
+	const int sh = serverOuter.h;
 
 	/* Derive Wayland origin from anchor edge. */
 	const SDL_Rect start = appWindow->windowRect();
 	const RailEdges e = railEdges(drag.type);
-	int x = e.left ? (start.x + start.w - w) : start.x;
-	int y = e.top ? (start.y + start.h - h) : start.y;
-	clampIntoDesktop(x, y, w, h);
-	reportAndAdopt(appWindow, x, y, w, h);
+	int x = e.left ? (start.x + start.w - sw) : start.x;
+	int y = e.top ? (start.y + start.h - sh) : start.y;
+	clampIntoDesktop(x, y, sw, sh);
+	reportAndAdopt(appWindow, x, y, sw, sh);
 }
 
 void SdlRail::completeLocalMoveIfPending()
@@ -1500,7 +1503,7 @@ BOOL SdlRail::window_common(rdpContext* context, const WINDOW_ORDER_INFO* orderI
 			r.w = static_cast<int>(windowState->windowWidth);
 			r.h = static_cast<int>(windowState->windowHeight);
 		}
-		WLog_VRB(TAG, "server geom id=0x%08" PRIx32 " rect=%d,%d %dx%d", orderInfo->windowId, r.x,
+		WLog_DBG(TAG, "server geom id=0x%08" PRIx32 " rect=%d,%d %dx%d", orderInfo->windowId, r.x,
 		         r.y, r.w, r.h);
 		appWindow->updateWindowRect(r);
 	}

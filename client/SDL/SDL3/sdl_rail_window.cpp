@@ -17,9 +17,9 @@
  * limitations under the License.
  */
 #include <algorithm>
+#include <cmath>
 #include <string>
 #include <utility>
-
 #include <freerdp/codec/color.h>
 #include <freerdp/log.h>
 #include <freerdp/window.h>
@@ -29,6 +29,7 @@
 #include "sdl_wayland.hpp"
 #include "sdl_window.hpp"
 #include "sdl_x11.hpp"
+#include "sdl_utils.hpp"
 
 #define TAG CLIENT_TAG("sdl.rail.window")
 
@@ -444,6 +445,59 @@ SDL_Rect SdlRailWindow::serverRect(const SDL_Rect& outer) const
 {
 	return stripInsets(outer, insets());
 }
+float SdlRailWindow::contentScale() const
+{
+	if (!sdl::utils::isWaylandDriver())
+		return 1.0f;
+	if (_win && _win->window())
+	{
+		const float s = SDL_GetWindowDisplayScale(_win->window());
+		if (s > 0.0f)
+			return s;
+	}
+	const float s = SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay());
+	return (s > 0.0f) ? s : 1.0f;
+}
+
+SDL_Rect SdlRailWindow::toLocal(const SDL_Rect& r) const
+{
+	const float s = contentScale();
+	if (s <= 1.0f)
+		return r;
+	return { static_cast<int>(std::round(static_cast<float>(r.x) / s)),
+		     static_cast<int>(std::round(static_cast<float>(r.y) / s)),
+		     static_cast<int>(std::ceil(static_cast<float>(r.w) / s)),
+		     static_cast<int>(std::ceil(static_cast<float>(r.h) / s)) };
+}
+
+SDL_Rect SdlRailWindow::toServer(const SDL_Rect& r) const
+{
+	const float s = contentScale();
+	if (s <= 1.0f)
+		return r;
+	return { static_cast<int>(std::round(static_cast<float>(r.x) * s)),
+		     static_cast<int>(std::round(static_cast<float>(r.y) * s)),
+		     static_cast<int>(std::round(static_cast<float>(r.w) * s)),
+		     static_cast<int>(std::round(static_cast<float>(r.h) * s)) };
+}
+
+SDL_Point SdlRailWindow::toLocal(const SDL_Point& p) const
+{
+	const float s = contentScale();
+	if (s <= 1.0f)
+		return p;
+	return { static_cast<int>(std::round(static_cast<float>(p.x) / s)),
+		     static_cast<int>(std::round(static_cast<float>(p.y) / s)) };
+}
+
+SDL_Point SdlRailWindow::toServer(const SDL_Point& p) const
+{
+	const float s = contentScale();
+	if (s <= 1.0f)
+		return p;
+	return { static_cast<int>(std::round(static_cast<float>(p.x) * s)),
+		     static_cast<int>(std::round(static_cast<float>(p.y) * s)) };
+}
 
 /* Surface blit offset within the local window (content anchor when maximized). */
 SDL_Point SdlRailWindow::blitOffset() const
@@ -549,8 +603,9 @@ bool SdlRailWindow::create(SDL_Window* parent, const SDL_Rect& parentRect)
 	{
 		/* SDL popups position parent-relative (works on Wayland too, via xdg_popup). */
 		const SDL_Rect rel = { vis.x - parentRect.x, vis.y - parentRect.y, vis.w, vis.h };
+		const SDL_Rect localRel = toLocal(rel);
 		_win = std::make_unique<SdlWindow>(
-		    SdlWindow::createPopup(parent, rel, caps.supportsTransparentWindows, _overlay));
+		    SdlWindow::createPopup(parent, localRel, caps.supportsTransparentWindows, _overlay));
 	}
 	else if (_isPopup && !caps.positionsReadable && !fullscreen)
 	{
@@ -565,8 +620,11 @@ bool SdlRailWindow::create(SDL_Window* parent, const SDL_Rect& parentRect)
 		Uint32 flags = SDL_WINDOW_BORDERLESS | SDL_WINDOW_HIDDEN;
 		if (caps.supportsTransparentWindows)
 			flags |= SDL_WINDOW_TRANSPARENT;
+		if (sdl::utils::isWaylandDriver())
+			flags |= SDL_WINDOW_HIGH_PIXEL_DENSITY;
+		const SDL_Rect localVis = toLocal(vis);
 		_win = std::make_unique<SdlWindow>(
-		    SdlWindow::create(SDL_GetPrimaryDisplay(), _title, flags, vis));
+		    SdlWindow::create(SDL_GetPrimaryDisplay(), _title, flags, localVis));
 	}
 	if (!_win || !_win->window() || !_win->renderer())
 	{
@@ -722,6 +780,7 @@ bool SdlRailWindow::reconcile(SDL_Window* parent, const SDL_Rect& parentRect)
 	if (_geometryDirty && !wmOwnsGeometry)
 	{
 		const SDL_Rect vis = targetOuterRect();
+		const SDL_Rect localVis = toLocal(vis);
 		/* The window is (or becomes) vis = _windowRect + fresh insets: record those as the insets
 		 * now baked in, so the round-trip back to server coords strips exactly this. */
 		_appliedInsets = bandInsets();
@@ -732,7 +791,9 @@ bool SdlRailWindow::reconcile(SDL_Window* parent, const SDL_Rect& parentRect)
 		/* Apply position and size if changed. */
 		if (_isPopup && parent)
 		{
-			if (!SDL_SetWindowPosition(_win->window(), vis.x - parentRect.x, vis.y - parentRect.y))
+			const SDL_Rect rel = { vis.x - parentRect.x, vis.y - parentRect.y, vis.w, vis.h };
+			const SDL_Rect localRel = toLocal(rel);
+			if (!SDL_SetWindowPosition(_win->window(), localRel.x, localRel.y))
 				WLog_VRB(TAG, "popup reposition unsupported id=0x%08" PRIx32 ": %s",
 				         static_cast<uint32_t>(_id), SDL_GetError());
 			else if (!railPlatformCaps().positionsReadable)
@@ -745,18 +806,19 @@ bool SdlRailWindow::reconcile(SDL_Window* parent, const SDL_Rect& parentRect)
 			int cx = 0;
 			int cy = 0;
 			SDL_GetWindowPosition(_win->window(), &cx, &cy);
-			if ((cx != vis.x) || (cy != vis.y))
+			if ((cx != localVis.x) || (cy != localVis.y))
 			{
-				SDL_SetWindowPosition(_win->window(), vis.x, vis.y);
+				SDL_SetWindowPosition(_win->window(), localVis.x, localVis.y);
 				applied = true;
 			}
 		}
-		if ((cw != vis.w) || (ch != vis.h))
+		if ((cw != localVis.w) || (ch != localVis.h))
 		{
-			std::ignore = _win->resize({ vis.w, vis.h });
+			WLog_DBG(TAG, "reconcile apply resize id=0x%08" PRIx32 " %dx%d -> %dx%d (server %dx%d)",
+			         static_cast<uint32_t>(_id), cw, ch, localVis.w, localVis.h, vis.w, vis.h);
+			std::ignore = _win->resize({ localVis.w, localVis.h });
 			applied = true;
-			/* Settle window resize via SDL_SyncWindow before reading back geometry to avoid
-			 * adopting transient dimensions while configure events are in flight. */
+			_needsFullBlit = true;
 			if (railPlatformCaps().positionsReadable && !_isPopup && !_localMoveActive &&
 			    !_loopEnd.pending)
 			{
@@ -764,10 +826,11 @@ bool SdlRailWindow::reconcile(SDL_Window* parent, const SDL_Rect& parentRect)
 				int aw = 0;
 				int ah = 0;
 				SDL_GetWindowSize(_win->window(), &aw, &ah);
-				if (settled && ((aw != vis.w) || (ah != vis.h)))
+				if (settled && ((aw != localVis.w) || (ah != localVis.h)))
 				{
 					/* Adopt WM size while preserving server origin. */
-					_wmRefusedOuter = { vis.x, vis.y, aw, ah };
+					const SDL_Rect serverOuter = toServer({ localVis.x, localVis.y, aw, ah });
+					_wmRefusedOuter = serverOuter;
 					_wmRefused = true;
 					applied = false; /* Geometry refused by WM; do not await echo. */
 				}
@@ -1015,7 +1078,9 @@ bool SdlRailWindow::paint(SDL_Surface* primary, SDL_PixelFormat fallbackFormat,
 		{
 			std::unique_lock lock(_gfxLock);
 			const SDL_Rect vis = targetOuterRect();
-			SDL_SetWindowPosition(_win->window(), vis.x - parentRect.x, vis.y - parentRect.y);
+			const SDL_Rect rel = { vis.x - parentRect.x, vis.y - parentRect.y, vis.w, vis.h };
+			const SDL_Rect localRel = toLocal(rel);
+			SDL_SetWindowPosition(_win->window(), localRel.x, localRel.y);
 			if (!railPlatformCaps().positionsReadable)
 				_needsFullBlit = true; /* Wayland applies move on next surface commit */
 		}

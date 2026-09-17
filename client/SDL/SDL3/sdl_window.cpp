@@ -720,6 +720,8 @@ SdlWindow::SdlWindow(SDL_Window* parent, const SDL_Rect& rect, bool transparent,
 	                       true);
 	SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_FOCUSABLE_BOOLEAN, false);
 	SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_BORDERLESS_BOOLEAN, true);
+	if (sdl::utils::isWaylandDriver())
+		SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_HIGH_PIXEL_DENSITY_BOOLEAN, true);
 	/* Transparent so menus' genuine per-pixel alpha (corners/shadow) isn't rendered black. */
 	if (transparent)
 		SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_TRANSPARENT_BOOLEAN, true);

@@ -134,13 +134,26 @@ int sdl_list_monitors([[maybe_unused]] SdlContext* sdl)
 
 		if (freerdp_settings_get_bool(settings, FreeRDP_RemoteApplicationMode))
 		{
-			/* RAIL requires full display coverage for 1:1 coordinates. Work area insets
-			 * are reported via SPI_SET_WORK_AREA instead of clipping session size. */
-			SDL_Rect rect = {};
-			if (SDL_GetDisplayBounds(monitor->orig_screen, &rect))
+			/* RAIL requires full display coverage for 1:1 coordinates.
+			 * When HiDPI scale is active or configured, use the physical display dimensions. */
+			float contentScale = SDL_GetDisplayContentScale(monitor->orig_screen);
+			if (freerdp_settings_get_uint32(settings, FreeRDP_DesktopScaleFactor) > 100)
+				contentScale = static_cast<float>(
+				                   freerdp_settings_get_uint32(settings, FreeRDP_DesktopScaleFactor)) /
+				               100.0f;
+			if (contentScale > 1.0f)
 			{
-				*pMaxWidth = WINPR_ASSERTING_INT_CAST(uint32_t, rect.w);
-				*pMaxHeight = WINPR_ASSERTING_INT_CAST(uint32_t, rect.h);
+				*pMaxWidth = WINPR_ASSERTING_INT_CAST(uint32_t, monitor->width);
+				*pMaxHeight = WINPR_ASSERTING_INT_CAST(uint32_t, monitor->height);
+			}
+			else
+			{
+				SDL_Rect rect = {};
+				if (SDL_GetDisplayBounds(monitor->orig_screen, &rect))
+				{
+					*pMaxWidth = WINPR_ASSERTING_INT_CAST(uint32_t, rect.w);
+					*pMaxHeight = WINPR_ASSERTING_INT_CAST(uint32_t, rect.h);
+				}
 			}
 		}
 		else if (freerdp_settings_get_bool(settings, FreeRDP_Fullscreen))
@@ -211,7 +224,14 @@ int sdl_list_monitors([[maybe_unused]] SdlContext* sdl)
 	}
 	for (const auto& id : sdl->monitorIds())
 	{
-		const auto monitor = sdl->getDisplay(id);
+		auto monitor = sdl->getDisplay(id);
+		auto mask = freerdp_settings_get_uint64(settings, FreeRDP_MonitorOverrideFlags);
+		if ((mask & FREERDP_MONITOR_OVERRIDE_DESKTOP_SCALE) != 0)
+			monitor.attributes.desktopScaleFactor =
+			    freerdp_settings_get_uint32(settings, FreeRDP_DesktopScaleFactor);
+		if ((mask & FREERDP_MONITOR_OVERRIDE_DEVICE_SCALE) != 0)
+			monitor.attributes.deviceScaleFactor =
+			    freerdp_settings_get_uint32(settings, FreeRDP_DeviceScaleFactor);
 		monitors.emplace_back(monitor);
 	}
 	// /monitors: may select a subset that excludes the SDL primary. The
