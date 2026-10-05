@@ -49,15 +49,20 @@
 #if defined(WITH_SMARTCARD_EMULATE)
 #include <freerdp/emulate/scard/smartcard_emulate.h>
 
-#define wrap_raw(ctx, fkt, ...)                                         \
-	ctx->useEmulatedCard ? Emulate_##fkt(ctx->emulation, ##__VA_ARGS__) \
-	                     : ctx->pWinSCardApi->pfn##fkt(__VA_ARGS__)
+/* The ternary is fully parenthesized: on _WIN32 wrap() below expands straight to wrap_raw(),
+ * so an unparenthesized ternary would swallow any operator applied to the result. For example
+ * `wrap(ctx, SCardIsValidContext, h) == SCARD_S_SUCCESS` would parse as
+ * `useEmulatedCard ? Emulate_...(h) : (pfn...(h) == SCARD_S_SUCCESS)`, i.e. the comparison only
+ * applies to the non-emulated branch. */
+#define wrap_raw(ctx, fkt, ...)                                              \
+	((ctx)->useEmulatedCard ? Emulate_##fkt((ctx)->emulation, ##__VA_ARGS__) \
+	                        : (ctx)->pWinSCardApi->pfn##fkt(__VA_ARGS__))
 #define wrap_ptr(ctx, fkt, ...) wrap_raw(ctx, fkt, ##__VA_ARGS__)
 #else
 #define wrap_raw(ctx, fkt, ...) \
-	ctx->useEmulatedCard ? SCARD_F_INTERNAL_ERROR : ctx->pWinSCardApi->pfn##fkt(__VA_ARGS__)
+	((ctx)->useEmulatedCard ? SCARD_F_INTERNAL_ERROR : (ctx)->pWinSCardApi->pfn##fkt(__VA_ARGS__))
 #define wrap_ptr(ctx, fkt, ...) \
-	ctx->useEmulatedCard ? nullptr : ctx->pWinSCardApi->pfn##fkt(__VA_ARGS__)
+	((ctx)->useEmulatedCard ? nullptr : (ctx)->pWinSCardApi->pfn##fkt(__VA_ARGS__))
 #endif
 
 #if defined(_WIN32)
@@ -768,7 +773,7 @@ WINPR_ATTR_NODISCARD static LONG smartcard_ReadCacheA_Call(scard_call_context* s
 	{
 		if (!autoalloc)
 		{
-			ret.pbData = malloc(call->Common.cbDataLen);
+			ret.pbData = calloc(1, call->Common.cbDataLen);
 			if (!ret.pbData)
 				return SCARD_F_INTERNAL_ERROR;
 		}
@@ -1460,7 +1465,7 @@ smartcard_Transmit_Call(scard_call_context* smartcard, wStream* out, SMARTCARD_O
 			call->cbRecvLength = 66560;
 
 		const UINT32 cbRecvLength = call->cbRecvLength;
-		ret.pbRecvBuffer = (BYTE*)malloc(cbRecvLength);
+		ret.pbRecvBuffer = (BYTE*)calloc(1, cbRecvLength);
 
 		if (!ret.pbRecvBuffer)
 			return STATUS_NO_MEMORY;
@@ -1494,7 +1499,7 @@ WINPR_ATTR_NODISCARD static LONG smartcard_Control_Call(scard_call_context* smar
 	WINPR_ASSERT(operation);
 
 	call = &operation->call.control;
-	ret.pvOutBuffer = (BYTE*)malloc(call->cbOutBufferSize);
+	ret.pvOutBuffer = (BYTE*)calloc(1, call->cbOutBufferSize);
 
 	if (!ret.pvOutBuffer)
 		return SCARD_E_NO_MEMORY;
@@ -1534,7 +1539,7 @@ WINPR_ATTR_NODISCARD static LONG smartcard_GetAttrib_Call(scard_call_context* sm
 		cbAttrLen = call->cbAttrLen;
 		if (cbAttrLen && !autoAllocate)
 		{
-			ret.pbAttr = (BYTE*)malloc(cbAttrLen);
+			ret.pbAttr = (BYTE*)calloc(1, cbAttrLen);
 
 			if (!ret.pbAttr)
 				return SCARD_E_NO_MEMORY;
@@ -1645,7 +1650,7 @@ WINPR_ATTR_NODISCARD static LONG smartcard_LocateCardsByATRA_Call(scard_call_con
 		for (UINT32 j = 0; j < call->cReaders; j++)
 		{
 			const LocateCards_ATRMask* mask = &call->rgAtrMasks[i];
-			for (UINT32 k = 0; k < mask->cbAtr; k++)
+			for (UINT32 k = 0; k < winpr_Data_Get_UINT32(&mask->cbAtr); k++)
 			{
 				if ((mask->rgbAtr[k] & mask->rgbMask[k]) !=
 				    (states[j].rgbAtr[k] & mask->rgbMask[k]))
@@ -1742,7 +1747,7 @@ WINPR_ATTR_NODISCARD static LONG smartcard_LocateCardsByATRW_Call(scard_call_con
 		for (UINT32 j = 0; j < call->cReaders; j++)
 		{
 			const LocateCards_ATRMask* mask = &call->rgAtrMasks[i];
-			for (UINT32 k = 0; k < mask->cbAtr; k++)
+			for (UINT32 k = 0; k < winpr_Data_Get_UINT32(&mask->cbAtr); k++)
 			{
 				if ((mask->rgbAtr[k] & mask->rgbMask[k]) !=
 				    (states[j].rgbAtr[k] & mask->rgbMask[k]))

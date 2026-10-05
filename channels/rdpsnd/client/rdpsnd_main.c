@@ -115,6 +115,8 @@ struct rdpsnd_plugin
 	size_t references;
 	BOOL OnOpenCalled;
 	BOOL async;
+	BOOL firstFlagReceived;
+	UINT32 totalLength;
 };
 
 WINPR_ATTR_NODISCARD
@@ -1060,6 +1062,9 @@ static UINT rdpsnd_process_connect(rdpsndPlugin* rdpsnd)
 #if defined(WITH_IOSAUDIO)
 		{ "ios", "" },
 #endif
+#if defined(WITH_AAUDIO)
+		{ "aaudio", "" },
+#endif
 #if defined(WITH_OPENSLES)
 		{ "opensles", "" },
 #endif
@@ -1192,21 +1197,39 @@ static UINT rdpsnd_virtual_channel_event_data_received(rdpsndPlugin* plugin, voi
 
 	if (dataFlags & CHANNEL_FLAG_FIRST)
 	{
+		if (plugin->firstFlagReceived)
+			return ERROR_INVALID_DATA;
+		plugin->firstFlagReceived = TRUE;
+
 		if (!plugin->data_in)
-			plugin->data_in = StreamPool_Take(plugin->pool, totalLength);
+			plugin->data_in = StreamPool_Take(plugin->pool, dataLength);
 
 		Stream_ResetPosition(plugin->data_in);
+		plugin->totalLength = totalLength;
 	}
+
+	if (!plugin->data_in)
+		return ERROR_INVALID_DATA;
 
 	if (!Stream_EnsureRemainingCapacity(plugin->data_in, dataLength))
 		return CHANNEL_RC_NO_MEMORY;
 
 	Stream_Write(plugin->data_in, pData, dataLength);
 
+	if ((Stream_GetPosition(plugin->data_in) > totalLength) || (totalLength != plugin->totalLength))
+		return ERROR_INVALID_DATA;
+
 	if (dataFlags & CHANNEL_FLAG_LAST)
 	{
+		if (!plugin->firstFlagReceived)
+			return ERROR_INVALID_DATA;
+		if (Stream_GetPosition(plugin->data_in) != totalLength)
+			return ERROR_INVALID_DATA;
+		plugin->firstFlagReceived = FALSE;
+
 		Stream_SealLength(plugin->data_in);
 		Stream_ResetPosition(plugin->data_in);
+		plugin->totalLength = 0;
 
 		if (plugin->async)
 		{

@@ -71,6 +71,7 @@
 #ifdef WITH_AAD
 #include <freerdp/utils/http.h>
 #include <freerdp/utils/aad.h>
+#include <freerdp/client/aad_helper.h>
 #endif
 
 #ifdef WITH_SSO_MIB
@@ -81,6 +82,13 @@
 
 #include <freerdp/log.h>
 #define TAG CLIENT_TAG("common")
+
+typedef struct
+{
+	freerdp* instance;
+	window_events_fkt_t window_events;
+	bool running;
+} handle_window_events_t;
 
 WINPR_ATTR_NODISCARD
 static BOOL requireRdpClientContext(const rdpContext* context)
@@ -1113,9 +1121,6 @@ BOOL client_cli_present_gateway_message(freerdp* instance, UINT32 type, BOOL isD
 		return TRUE;
 
 	printf("%s:\n", msgType);
-#if defined(WIN32)
-	printf("%.*S\n", (int)length, message);
-#else
 	{
 		LPSTR msg = ConvertWCharNToUtf8Alloc(message, length / sizeof(WCHAR), nullptr);
 		if (!msg)
@@ -1126,7 +1131,6 @@ BOOL client_cli_present_gateway_message(freerdp* instance, UINT32 type, BOOL isD
 		printf("%s\n", msg);
 		free(msg);
 	}
-#endif
 
 	while (isConsentMandatory)
 	{
@@ -1268,12 +1272,15 @@ cleanup:
 }
 #endif
 
-BOOL client_cli_get_access_token(freerdp* instance, AccessTokenType tokenType, char** token,
-                                 size_t count, ...)
+WINPR_ATTR_NODISCARD
+static BOOL client_cli_get_access_token_va(freerdp* instance,
+                                           WINPR_ATTR_UNUSED AccessTokenType tokenType,
+                                           char** token, WINPR_ATTR_UNUSED size_t count, va_list ap)
 {
 	WINPR_ASSERT(instance);
 	WINPR_ASSERT(token);
 
+	*token = nullptr;
 #if !defined(WITH_AAD)
 	WLog_ERR(TAG, "Build does not support AAD authentication");
 	return FALSE;
@@ -1305,12 +1312,9 @@ BOOL client_cli_get_access_token(freerdp* instance, AccessTokenType tokenType, c
 					    "ACCESS_TOKEN_TYPE_AAD expected 2 additional arguments, but got %" PRIuz
 					    ", ignoring",
 					    count);
-				va_list ap = WINPR_C_ARRAY_INIT;
-				va_start(ap, count);
 				const char* scope = va_arg(ap, const char*);
 				const char* req_cnf = va_arg(ap, const char*);
 				rc = client_cli_get_rdsaad_access_token(instance, scope, req_cnf, token);
-				va_end(ap);
 			}
 		}
 		break;
@@ -1334,12 +1338,25 @@ BOOL client_cli_get_access_token(freerdp* instance, AccessTokenType tokenType, c
 #endif
 }
 
-BOOL client_common_get_access_token(freerdp* instance, const char* request, char** token)
+BOOL client_cli_get_access_token(freerdp* instance, AccessTokenType tokenType, char** token,
+                                 size_t count, ...)
 {
-#ifdef WITH_AAD
+	va_list ap = WINPR_C_ARRAY_INIT;
+	va_start(ap, count);
+	const BOOL rc = client_cli_get_access_token_va(instance, tokenType, token, count, ap);
+	va_end(ap);
+	return rc;
+}
+
+BOOL client_common_get_access_token(WINPR_ATTR_UNUSED freerdp* instance,
+                                    WINPR_ATTR_UNUSED const char* request,
+                                    WINPR_ATTR_UNUSED char** token)
+{
 	WINPR_ASSERT(request);
 	WINPR_ASSERT(token);
 
+	*token = nullptr;
+#ifdef WITH_AAD
 	BOOL ret = FALSE;
 	long resp_code = 0;
 	BYTE* response = nullptr;
@@ -1375,6 +1392,7 @@ cleanup:
 	free(response);
 	return ret;
 #else
+	WLog_ERR(TAG, "Build does not support AAD authentication");
 	return FALSE;
 #endif
 }
@@ -1429,7 +1447,70 @@ BOOL client_auto_reconnect(freerdp* instance)
 	return client_auto_reconnect_ex(instance, nullptr);
 }
 
-BOOL client_auto_reconnect_ex(freerdp* instance, BOOL (*window_events)(freerdp* instance))
+WINPR_ATTR_NODISCARD
+static BOOL client_auto_reconnect_do(freerdp* instance, BOOL retry, UINT32 numRetries,
+                                     UINT32 maxRetries)
+{
+	WINPR_ASSERT(instance);
+
+	/* Perform an auto-reconnect. */
+	while (retry)
+	{
+		/* Quit retrying if max retries has been exceeded */
+		if ((maxRetries > 0) && (numRetries >= maxRetries))
+		{
+			WLog_DBG(TAG, "AutoReconnect retries exceeded.");
+			return FALSE;
+		}
+
+		/* Attempt the next reconnect */
+		WLog_INFO(TAG, "Attempting reconnect (%" PRIu32 " of %" PRIu32 ")", numRetries, maxRetries);
+
+		const SSIZE_T delay =
+		    IFCALLRESULT(5000, instance->RetryDialog, instance, "connection", numRetries, nullptr);
+		if (delay < 0)
+			return FALSE;
+		numRetries++;
+
+		if (freerdp_reconnect(instance))
+			return TRUE;
+
+		switch (freerdp_get_last_error(instance->context))
+		{
+			case FREERDP_ERROR_CONNECT_CANCELLED:
+				WLog_WARN(TAG, "Autoreconnect aborted by user");
+				return FALSE;
+			default:
+				break;
+		}
+
+		for (SSIZE_T x = 0; x < delay / 10; x++)
+			Sleep(10);
+	}
+
+	WLog_ERR(TAG, "Maximum reconnect retries exceeded");
+	return FALSE;
+}
+
+WINPR_ATTR_NODISCARD
+static DWORD WINAPI handle_window_events(void* parg)
+{
+	handle_window_events_t* arg = parg;
+	WINPR_ASSERT(arg);
+
+	while (arg->running)
+	{
+		WINPR_ASSERT(arg->window_events);
+		if (!arg->window_events(arg->instance))
+		{
+			WLog_ERR(TAG, "window_events failed!");
+		}
+		Sleep(10);
+	}
+	return 0;
+}
+
+BOOL client_auto_reconnect_ex(freerdp* instance, window_events_fkt_t window_events)
 {
 	BOOL retry = TRUE;
 	UINT32 error = 0;
@@ -1493,50 +1574,20 @@ BOOL client_auto_reconnect_ex(freerdp* instance, BOOL (*window_events)(freerdp* 
 			break;
 	}
 
-	/* Perform an auto-reconnect. */
-	while (retry)
+	handle_window_events_t arg = { .instance = instance,
+		                           .window_events = window_events,
+		                           .running = true };
+	HANDLE thread = nullptr;
+	if (window_events)
+		thread = CreateThread(nullptr, 0, handle_window_events, &arg, 0, nullptr);
+	const BOOL rc = client_auto_reconnect_do(instance, retry, numRetries, maxRetries);
+	if (thread)
 	{
-		/* Quit retrying if max retries has been exceeded */
-		if ((maxRetries > 0) && (numRetries >= maxRetries))
-		{
-			WLog_DBG(TAG, "AutoReconnect retries exceeded.");
-			return FALSE;
-		}
-
-		/* Attempt the next reconnect */
-		WLog_INFO(TAG, "Attempting reconnect (%" PRIu32 " of %" PRIu32 ")", numRetries, maxRetries);
-
-		const SSIZE_T delay =
-		    IFCALLRESULT(5000, instance->RetryDialog, instance, "connection", numRetries, nullptr);
-		if (delay < 0)
-			return FALSE;
-		numRetries++;
-
-		if (freerdp_reconnect(instance))
-			return TRUE;
-
-		switch (freerdp_get_last_error(instance->context))
-		{
-			case FREERDP_ERROR_CONNECT_CANCELLED:
-				WLog_WARN(TAG, "Autoreconnect aborted by user");
-				return FALSE;
-			default:
-				break;
-		}
-		for (SSIZE_T x = 0; x < delay / 10; x++)
-		{
-			if (!IFCALLRESULT(TRUE, window_events, instance))
-			{
-				WLog_ERR(TAG, "window_events failed!");
-				return FALSE;
-			}
-
-			Sleep(10);
-		}
+		arg.running = FALSE;
+		WaitForSingleObject(thread, INFINITE);
+		CloseHandle(thread);
 	}
-
-	WLog_ERR(TAG, "Maximum reconnect retries exceeded");
-	return FALSE;
+	return rc;
 }
 
 int freerdp_client_common_stop(rdpContext* context)
@@ -1554,6 +1605,10 @@ int freerdp_client_common_stop(rdpContext* context)
 			(void)CloseHandle(cctx->thread);
 			cctx->thread = nullptr;
 		}
+#if defined(WITH_AAD)
+		aad_auth_helper_stop(cctx->aadHelper);
+		cctx->aadHelper = nullptr;
+#endif
 	}
 
 	return 0;
@@ -2907,9 +2962,72 @@ BOOL client_common_save_session_info(WINPR_ATTR_UNUSED rdpContext* context, UINT
 char* freerdp_client_extract_aad_code(rdpClientContext* cctx, const char* data, size_t length)
 {
 	WINPR_ASSERT(cctx);
-	WINPR_ASSERT(!requireRdpClientContext(&cctx->context));
+	WINPR_ASSERT(requireRdpClientContext(&cctx->context));
 
 	if (!cctx || !requireRdpClientContext(&cctx->context))
 		return nullptr;
 	return freerdp_oauth2_extract_code(cctx->oauth2, data, length);
+}
+
+WINPR_ATTR_NODISCARD
+static BOOL client_helper_get_access_token_va(freerdp* instance,
+                                              WINPR_ATTR_UNUSED AccessTokenType tokenType,
+                                              WINPR_ATTR_UNUSED char** token,
+                                              WINPR_ATTR_UNUSED size_t count, va_list ap)
+{
+	WINPR_ASSERT(instance);
+	WINPR_ASSERT(token);
+
+	*token = nullptr;
+
+	WINPR_ASSERT(requireRdpClientContext(instance->context));
+
+#if defined(WITH_AAD)
+	rdpClientContext* cctx = (rdpClientContext*)instance->context;
+	WINPR_ASSERT(cctx);
+
+	aad_auth_helper_stop(cctx->aadHelper);
+	cctx->aadHelper = aad_auth_helper_start(cctx);
+	if (!cctx->aadHelper)
+		return FALSE;
+
+	const BOOL rc =
+	    aad_auth_helper_get_access_token_v(cctx->aadHelper, tokenType, token, count, ap);
+	aad_auth_helper_stop(cctx->aadHelper);
+	cctx->aadHelper = nullptr;
+	return rc;
+#else
+	WLog_ERR(TAG, "Build does not support AAD authentication");
+	return FALSE;
+#endif
+}
+
+BOOL client_failsafe_get_access_token(freerdp* instance, AccessTokenType tokenType, char** token,
+                                      size_t count, ...)
+{
+	{
+		va_list ap = WINPR_C_ARRAY_INIT;
+		va_start(ap, count);
+		const BOOL rc = client_helper_get_access_token_va(instance, tokenType, token, count, ap);
+		va_end(ap);
+		if (rc)
+			return rc;
+	}
+	{
+		va_list ap = WINPR_C_ARRAY_INIT;
+		va_start(ap, count);
+		const BOOL rc = client_cli_get_access_token_va(instance, tokenType, token, count, ap);
+		va_end(ap);
+		return rc;
+	}
+}
+
+BOOL client_helper_get_access_token(freerdp* instance, AccessTokenType tokenType, char** token,
+                                    size_t count, ...)
+{
+	va_list ap = WINPR_C_ARRAY_INIT;
+	va_start(ap, count);
+	const BOOL rc = client_helper_get_access_token_va(instance, tokenType, token, count, ap);
+	va_end(ap);
+	return rc;
 }

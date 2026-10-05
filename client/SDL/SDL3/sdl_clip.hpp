@@ -1,6 +1,6 @@
 /**
  * FreeRDP: A Remote Desktop Protocol Implementation
- * SDL Client keyboard helper
+ * SDL Client clipboard
  *
  * Copyright 2024 Armin Novak <armin.novak@thincast.com>
  * Copyright 2024 Thincast Technologies GmbH
@@ -126,6 +126,7 @@ class sdlClip
 
 	[[nodiscard]] static bool mime_is_file(const std::string& mime);
 	[[nodiscard]] static bool mime_is_text(const std::string& mime);
+	[[nodiscard]] static bool mime_is_utf8(const std::string& mime);
 	[[nodiscard]] static bool mime_is_image(const std::string& mime);
 	[[nodiscard]] static bool mime_is_bmp(const std::string& mime);
 	[[nodiscard]] static bool mime_is_html(const std::string& mime);

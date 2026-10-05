@@ -33,6 +33,7 @@
 #include <winpr/sysinfo.h>
 #include <winpr/registry.h>
 #include <winpr/wtsapi.h>
+#include <winpr/input.h>
 
 #include <freerdp/version.h>
 #include <freerdp/settings.h>
@@ -1103,31 +1104,16 @@ rdpSettings* freerdp_settings_new(DWORD flags)
 	    !freerdp_settings_set_bool(settings, FreeRDP_DrawAllowDynamicColorFidelity, TRUE) ||
 	    !freerdp_settings_set_bool(settings, FreeRDP_FrameMarkerCommandEnabled, TRUE) ||
 	    !freerdp_settings_set_bool(settings, FreeRDP_SurfaceFrameMarkerEnabled, TRUE) ||
-	    !freerdp_settings_set_bool(settings, FreeRDP_AllowCacheWaitingList, TRUE) ||
-	    !freerdp_settings_set_uint32(settings, FreeRDP_BitmapCacheV2NumCells, 5))
-		goto out_fail;
-	settings->BitmapCacheV2CellInfo =
-	    (BITMAP_CACHE_V2_CELL_INFO*)calloc(6, sizeof(BITMAP_CACHE_V2_CELL_INFO));
-
-	if (!settings->BitmapCacheV2CellInfo)
+	    !freerdp_settings_set_bool(settings, FreeRDP_AllowCacheWaitingList, TRUE))
 		goto out_fail;
 
-	{
-		BITMAP_CACHE_V2_CELL_INFO cache = WINPR_C_ARRAY_INIT;
-		cache.numEntries = 600;
-		if (!freerdp_settings_set_pointer_array(settings, FreeRDP_BitmapCacheV2CellInfo, 0,
-		                                        &cache) ||
-		    !freerdp_settings_set_pointer_array(settings, FreeRDP_BitmapCacheV2CellInfo, 1, &cache))
-			goto out_fail;
-		cache.numEntries = 2048;
-		if (!freerdp_settings_set_pointer_array(settings, FreeRDP_BitmapCacheV2CellInfo, 2,
-		                                        &cache) ||
-		    !freerdp_settings_set_pointer_array(settings, FreeRDP_BitmapCacheV2CellInfo, 4, &cache))
-			goto out_fail;
-		cache.numEntries = 4096;
-		if (!freerdp_settings_set_pointer_array(settings, FreeRDP_BitmapCacheV2CellInfo, 3, &cache))
-			goto out_fail;
-	}
+	const BITMAP_CACHE_V2_CELL_INFO CellInfo[5] = {
+		{ 600, FALSE }, { 600, FALSE }, { 65536, FALSE }, { 4096, FALSE }, { 2048, FALSE }
+	};
+	if (!freerdp_settings_set_pointer_len(settings, FreeRDP_BitmapCacheV2CellInfo, CellInfo,
+	                                      ARRAYSIZE(CellInfo)))
+		goto out_fail;
+
 	if (!freerdp_settings_set_bool(settings, FreeRDP_NoBitmapCompressionHeader, TRUE) ||
 	    !freerdp_settings_set_bool(settings, FreeRDP_RefreshRect, TRUE) ||
 	    !freerdp_settings_set_bool(settings, FreeRDP_SuppressOutput, TRUE) ||
@@ -1815,6 +1801,34 @@ BOOL freerdp_settings_enforce_monitor_exists(rdpSettings* settings)
 	}
 
 	return TRUE;
+}
+
+void freerdp_settings_sanitize_keyboard_type(wLog* log, rdpSettings* settings, const char* source)
+{
+	WINPR_ASSERT(settings);
+
+	switch (settings->KeyboardType)
+	{
+		case WINPR_KBD_TYPE_IBM_PC_XT:
+		case WINPR_KBD_TYPE_OLIVETTI_ICO:
+		case WINPR_KBD_TYPE_IBM_PC_AT:
+		case WINPR_KBD_TYPE_IBM_ENHANCED:
+		case WINPR_KBD_TYPE_NOKIA_1050:
+		case WINPR_KBD_TYPE_NOKIA_9140:
+		case WINPR_KBD_TYPE_JAPANESE:
+		case WINPR_KBD_TYPE_KOREAN:
+			return;
+		default:
+			break;
+	}
+
+	if (!log)
+		log = WLog_Get(TAG);
+	WLog_Print(log, WLOG_WARN,
+	           "%s: KeyboardType=0x%08" PRIx32
+	           " is not a known WINPR_KBD_TYPE, using WINPR_KBD_TYPE_IBM_ENHANCED instead",
+	           source ? source : "settings", settings->KeyboardType);
+	settings->KeyboardType = WINPR_KBD_TYPE_IBM_ENHANCED;
 }
 
 BOOL freerdp_settings_enforce_consistency(rdpSettings* settings)

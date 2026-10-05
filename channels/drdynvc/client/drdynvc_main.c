@@ -1500,6 +1500,14 @@ static UINT drdynvc_process_data_first(drdynvcPlugin* drdynvc, int Sp, int cbChI
 			goto out;
 		}
 
+		if (dataSize == 0)
+		{
+			status = ERROR_INVALID_DATA;
+			WLog_Print(drdynvc->log, WLOG_ERROR, "error de-compressing first packet");
+			free(data);
+			goto out;
+		}
+
 		s = Stream_New(data, dataSize);
 		if (!s)
 		{
@@ -1568,6 +1576,13 @@ static UINT drdynvc_process_data(drdynvcPlugin* drdynvc, int Sp, int cbChId, wSt
 		if (zgfx_decompress(channel->decompressor, Stream_Pointer(s),
 		                    WINPR_ASSERTING_INT_CAST(UINT32, Stream_GetRemainingLength(s)), &data,
 		                    &dataSize, 0) < 0)
+		{
+			status = ERROR_INVALID_DATA;
+			WLog_Print(drdynvc->log, WLOG_ERROR, "error de-compressing data packet");
+			goto out;
+		}
+
+		if (dataSize == 0)
 		{
 			status = ERROR_INVALID_DATA;
 			WLog_Print(drdynvc->log, WLOG_ERROR, "error de-compressing data packet");
@@ -1698,11 +1713,16 @@ static UINT drdynvc_virtual_channel_event_data_received(drdynvcPlugin* drdynvc, 
 
 	if (dataFlags & CHANNEL_FLAG_FIRST)
 	{
+		if (drdynvc->firstFlagReceived)
+			return ERROR_INVALID_DATA;
+		drdynvc->firstFlagReceived = TRUE;
+
 		DVCMAN* mgr = (DVCMAN*)drdynvc->channel_mgr;
 		if (drdynvc->data_in)
 			Stream_Release(drdynvc->data_in);
 
-		drdynvc->data_in = StreamPool_Take(mgr->pool, totalLength);
+		drdynvc->data_in = StreamPool_Take(mgr->pool, dataLength);
+		drdynvc->totalLength = totalLength;
 	}
 
 	if (!(data_in = drdynvc->data_in))
@@ -1721,16 +1741,27 @@ static UINT drdynvc_virtual_channel_event_data_received(drdynvcPlugin* drdynvc, 
 
 	Stream_Write(data_in, pData, dataLength);
 
+	if ((Stream_GetPosition(data_in) > totalLength) || (drdynvc->totalLength != totalLength))
+	{
+		Stream_Release(drdynvc->data_in);
+		drdynvc->data_in = nullptr;
+		return ERROR_INVALID_DATA;
+	}
+
 	if (dataFlags & CHANNEL_FLAG_LAST)
 	{
-		const size_t cap = Stream_Capacity(data_in);
+		if (!drdynvc->firstFlagReceived)
+			return ERROR_INVALID_DATA;
+		drdynvc->firstFlagReceived = FALSE;
+
 		const size_t pos = Stream_GetPosition(data_in);
-		if (cap < pos)
+		if (drdynvc->totalLength != pos)
 		{
 			WLog_Print(drdynvc->log, WLOG_ERROR, "drdynvc_plugin_process_received: read error");
 			return ERROR_INVALID_DATA;
 		}
 
+		drdynvc->totalLength = 0;
 		drdynvc->data_in = nullptr;
 		Stream_SealLength(data_in);
 		Stream_ResetPosition(data_in);

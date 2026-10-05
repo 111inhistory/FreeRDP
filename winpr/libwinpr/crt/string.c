@@ -780,6 +780,8 @@ size_t ConvertLineEndingToLF(char* str, size_t size)
 				break;
 		}
 	}
+	if (skip > 0)
+		str[size - skip] = '\0';
 	return size - skip;
 }
 
@@ -794,7 +796,7 @@ char* ConvertLineEndingToCRLF(const char* str, size_t* size)
 		return nullptr;
 
 	size_t linebreaks = 0;
-	for (size_t x = 0; x < s - 1; x++)
+	for (size_t x = 0; x < s; x++)
 	{
 		char c = str[x];
 		switch (c)
@@ -823,7 +825,7 @@ char* ConvertLineEndingToCRLF(const char* str, size_t* size)
 				break;
 			case '\n':
 				/* Do not duplicate existing \r\n sequences */
-				if ((x > 0) && (str[x - 1] != '\r'))
+				if ((x == 0) || (str[x - 1] != '\r'))
 				{
 					cnv[pos++] = '\r';
 					cnv[pos++] = '\n';

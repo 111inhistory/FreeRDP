@@ -407,17 +407,15 @@ static const LIBUSB_ENDPOINT_DESCEIPTOR* func_get_ep_desc(LIBUSB_CONFIG_DESCRIPT
 
 static void LIBUSB_CALL func_bulk_transfer_cb(struct libusb_transfer* transfer)
 {
-	ASYNC_TRANSFER_USER_DATA* user_data = nullptr;
 	uint32_t streamID = 0;
-	wArrayList* list = nullptr;
 
-	user_data = (ASYNC_TRANSFER_USER_DATA*)transfer->user_data;
+	ASYNC_TRANSFER_USER_DATA* user_data = (ASYNC_TRANSFER_USER_DATA*)transfer->user_data;
 	if (!user_data)
 	{
 		WLog_ERR(TAG, "Invalid transfer->user_data!");
 		return;
 	}
-	list = user_data->queue;
+	wArrayList* list = user_data->queue;
 	ArrayList_Lock(list);
 	streamID = stream_id_from_buffer(transfer);
 
@@ -427,10 +425,46 @@ static void LIBUSB_CALL func_bulk_transfer_cb(struct libusb_transfer* transfer)
 		    ((STREAM_ID_PROXY << 30) | user_data->idev->get_ReqCompletion(user_data->idev));
 		const UINT32 RequestID = streamID & INTERFACE_ID_MASK;
 
+		UINT32 status = USBD_STATUS_SUCCESS;
+		switch (transfer->status)
+		{
+			case LIBUSB_TRANSFER_COMPLETED:
+				status = USBD_STATUS_SUCCESS;
+				break;
+
+			case LIBUSB_TRANSFER_ERROR:
+				status = USBD_STATUS_CANCELED;
+				break;
+
+			case LIBUSB_TRANSFER_TIMED_OUT:
+				status = USBD_STATUS_TIMEOUT;
+				break;
+
+			case LIBUSB_TRANSFER_CANCELLED:
+				status = USBD_STATUS_CANCELED;
+				break;
+
+			case LIBUSB_TRANSFER_STALL:
+				status = USBD_STATUS_STALL_PID;
+				break;
+
+			case LIBUSB_TRANSFER_NO_DEVICE:
+				status = USBD_STATUS_DEVICE_GONE;
+				break;
+
+			case LIBUSB_TRANSFER_OVERFLOW:
+				status = USBD_STATUS_BABBLE_DETECTED;
+				break;
+
+			default:
+				status = USBD_STATUS_CANCELED;
+				break;
+		}
+
 		user_data->cb(user_data->idev, user_data->callback, user_data->data, InterfaceId,
 		              user_data->noack, user_data->MessageId, RequestID,
-		              WINPR_ASSERTING_INT_CAST(uint32_t, transfer->num_iso_packets),
-		              transfer->status, user_data->StartFrame, user_data->ErrorCount,
+		              WINPR_ASSERTING_INT_CAST(uint32_t, transfer->num_iso_packets), status,
+		              user_data->StartFrame, user_data->ErrorCount,
 		              WINPR_ASSERTING_INT_CAST(uint32_t, transfer->actual_length),
 		              user_data->transferDir);
 		user_data->data = nullptr;
@@ -1366,6 +1400,20 @@ static int libusb_udev_query_device_port_status(IUDEVICE* idev, UINT32* UsbdStat
 }
 
 WINPR_ATTR_NODISCARD
+static int libusb_udev_reset_device(IUDEVICE* idev)
+{
+	UDEVICE* pdev = (UDEVICE*)idev;
+
+	if (!pdev || !pdev->urbdrc)
+		return -1;
+
+	URBDRC_PLUGIN* urbdrc = pdev->urbdrc;
+	const int ret = libusb_reset_device(pdev->libusb_handle);
+	log_libusb_result(urbdrc->log, WLOG_DEBUG, "libusb_reset_device", ret);
+	return ret;
+}
+
+WINPR_ATTR_NODISCARD
 static int libusb_udev_isoch_transfer(IUDEVICE* idev, GENERIC_CHANNEL_CALLBACK* callback,
                                       UINT32 MessageId, UINT32 RequestId, UINT32 EndpointAddress,
                                       WINPR_ATTR_UNUSED UINT32 TransferFlags, UINT32 StartFrame,
@@ -1377,18 +1425,26 @@ static int libusb_udev_isoch_transfer(IUDEVICE* idev, GENERIC_CHANNEL_CALLBACK* 
 	int rc = 0;
 	UINT32 iso_packet_size = 0;
 	UDEVICE* pdev = (UDEVICE*)idev;
-	ASYNC_TRANSFER_USER_DATA* user_data = nullptr;
 	struct libusb_transfer* iso_transfer = nullptr;
-	URBDRC_PLUGIN* urbdrc = nullptr;
 	size_t outSize = (12ULL * NumberOfPackets);
 	uint32_t streamID = 0x40000000 | RequestId;
 
 	if (!pdev || !pdev->urbdrc)
 		return -1;
 
-	urbdrc = pdev->urbdrc;
-	user_data = async_transfer_user_data_new(idev, MessageId, 48, BufferSize, Buffer,
-	                                         outSize + 1024, NoAck, transferDir, cb, callback);
+	URBDRC_PLUGIN* urbdrc = pdev->urbdrc;
+
+	if ((NumberOfPackets > INT32_MAX) || (BufferSize > INT32_MAX))
+	{
+		WLog_Print(urbdrc->log, WLOG_ERROR,
+		           "[NumberOfPackets=%" PRIu32 ", BufferSize=%" PRIu32
+		           " ] out of bounds, maximum allowed is %d",
+		           NumberOfPackets, BufferSize, INT32_MAX);
+		return -1;
+	}
+
+	ASYNC_TRANSFER_USER_DATA* user_data = async_transfer_user_data_new(
+	    idev, MessageId, 48, BufferSize, Buffer, outSize + 1024, NoAck, transferDir, cb, callback);
 
 	if (!user_data)
 		return -1;
@@ -1489,14 +1545,16 @@ static int libusb_udev_bulk_or_interrupt_transfer(
 	UDEVICE* pdev = (UDEVICE*)idev;
 	const LIBUSB_ENDPOINT_DESCEIPTOR* ep_desc = nullptr;
 	struct libusb_transfer* transfer = nullptr;
-	URBDRC_PLUGIN* urbdrc = nullptr;
 	ASYNC_TRANSFER_USER_DATA* user_data = nullptr;
 	uint32_t streamID = 0x80000000 | RequestId;
 
 	if (!pdev || !pdev->LibusbConfig || !pdev->urbdrc)
 		return -1;
 
-	urbdrc = pdev->urbdrc;
+	if (BufferSize > INT32_MAX)
+		return -1;
+
+	URBDRC_PLUGIN* urbdrc = pdev->urbdrc;
 	user_data = async_transfer_user_data_new(idev, MessageId, 36, BufferSize, data, 0, NoAck,
 	                                         transferDir, cb, callback);
 
@@ -1689,20 +1747,24 @@ static void udev_free(IUDEVICE* idev)
 		log_libusb_result(urbdrc->log, WLOG_ERROR, "libusb_reset_device", rc);
 	}
 
-	/* HACK: We need to wait until the cancel transfer has been processed by
-	 * poll_libusb_events
-	 */
-	Sleep(100);
+	while (ArrayList_Count(udev->request_queue) > 0)
+	{
+		/* HACK: We need to wait until the cancel transfer has been processed by
+		 * poll_libusb_events
+		 */
+		Sleep(100);
+	}
 
 	/* release all interface and  attach kernel driver */
 	if (!udev->iface.attach_kernel_driver(idev))
 		WLog_Print(udev->urbdrc->log, WLOG_WARN, "attach_kernel_driver failed for device");
-	ArrayList_Free(udev->request_queue);
-	/* free the config descriptor that send from windows */
-	msusb_msconfig_free(udev->MsConfig);
 	libusb_unref_device(udev->libusb_dev);
 	libusb_close(udev->libusb_handle);
 	libusb_close(udev->hub_handle);
+
+	ArrayList_Free(udev->request_queue);
+	/* free the config descriptor that send from windows */
+	msusb_msconfig_free(udev->MsConfig);
 	free(udev->devDescriptor);
 	free(idev);
 }
@@ -1749,6 +1811,7 @@ static void udev_load_interface(UDEVICE* pdev)
 	pdev->iface.detach_kernel_driver = libusb_udev_detach_kernel_driver;
 	pdev->iface.attach_kernel_driver = libusb_udev_attach_kernel_driver;
 	pdev->iface.query_device_port_status = libusb_udev_query_device_port_status;
+	pdev->iface.reset_device = libusb_udev_reset_device;
 	pdev->iface.free = udev_free;
 }
 

@@ -627,7 +627,7 @@ static BOOL rdp_write_extended_info_packet(rdpRdp* rdp, wStream* s)
 
 	if (freerdp_settings_get_bool(settings, FreeRDP_SupportDynamicTimeZone))
 	{
-		if (!Stream_EnsureRemainingCapacity(s, 8 + 254 * sizeof(WCHAR)))
+		if (!Stream_EnsureRemainingCapacity(s, 8ull + 254ull * sizeof(WCHAR)))
 			goto fail;
 
 		Stream_Write_UINT16(s, 0); /* reserved1 (2 bytes) */
@@ -1062,7 +1062,8 @@ BOOL rdp_recv_client_info(rdpRdp* rdp, wStream* s)
 	UINT16 channelId = 0;
 	UINT16 securityFlags = 0;
 
-	WINPR_ASSERT(rdp_get_state(rdp) == CONNECTION_STATE_SECURE_SETTINGS_EXCHANGE);
+	if (!rdp_is_reached_state(rdp, CONNECTION_STATE_SECURE_SETTINGS_EXCHANGE))
+		return FALSE;
 
 	if (!rdp_read_header(rdp, s, &length, &channelId))
 		return FALSE;

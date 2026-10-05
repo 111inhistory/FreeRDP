@@ -334,7 +334,6 @@ static BOOL rts_read_auth_verifier(wStream* s, auth_verifier_co_t* auth,
 		return FALSE;
 
 	const size_t expected = header->frag_length - header->auth_length - 8;
-	WINPR_ASSERT(pos + auth->auth_pad_length == expected);
 	return pos + auth->auth_pad_length == expected;
 }
 
@@ -1313,7 +1312,7 @@ static BOOL rts_receive_window_size_command_write(wStream* s, UINT32 ReceiveWind
 {
 	WINPR_ASSERT(s);
 
-	if (!Stream_EnsureRemainingCapacity(s, 2 * sizeof(UINT32)))
+	if (!Stream_EnsureRemainingCapacity(s, 2ull * sizeof(UINT32)))
 		return FALSE;
 
 	Stream_Write_UINT32(s, RTS_CMD_RECEIVE_WINDOW_SIZE); /* CommandType (4 bytes) */
@@ -2472,7 +2471,7 @@ BOOL rts_write_pdu_auth3(wStream* s, const rpcconn_rpc_auth_3_hdr_t* auth)
 	if (!rts_write_common_pdu_header(s, &auth->header))
 		return FALSE;
 
-	if (!Stream_EnsureRemainingCapacity(s, 2 * sizeof(UINT16)))
+	if (!Stream_EnsureRemainingCapacity(s, 2ull * sizeof(UINT16)))
 		return FALSE;
 
 	Stream_Write_UINT16(s, auth->max_xmit_frag);

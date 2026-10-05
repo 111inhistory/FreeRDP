@@ -267,7 +267,7 @@ WINPR_ATTR_NODISCARD static LONG smartcard_ndr_write(wStream* s, const BYTE* dat
 			return SCARD_E_INVALID_PARAMETER;
 	}
 
-	if (!Stream_EnsureRemainingCapacity(s, required + dataLen + 4))
+	if (!Stream_EnsureRemainingCapacity(s, required + dataLen + 4ull))
 		return STATUS_BUFFER_TOO_SMALL;
 
 	switch (type)
@@ -2721,6 +2721,8 @@ WINPR_ATTR_NODISCARD static LONG smartcard_unpack_reader_state_a(wLog* log, wStr
 		status = smartcard_ndr_read_a(log, s, &readerState->szReader, NDR_PTR_FULL);
 		if (status != SCARD_S_SUCCESS)
 			goto fail;
+		if (!readerState->szReader)
+			goto fail;
 	}
 
 	*ppcReaders = rgReaderStates;
@@ -2812,6 +2814,8 @@ WINPR_ATTR_NODISCARD static LONG smartcard_unpack_reader_state_w(wLog* log, wStr
 
 		status = smartcard_ndr_read_w(log, s, &readerState->szReader, NDR_PTR_FULL);
 		if (status != SCARD_S_SUCCESS)
+			goto fail;
+		if (!readerState->szReader)
 			goto fail;
 	}
 
@@ -3555,7 +3559,7 @@ LONG smartcard_pack_transmit_return(wStream* s, const Transmit_Return* ret)
 		UINT32 cbExtraBytes = (UINT32)(ret->pioRecvPci->cbPciLength - sizeof(SCARD_IO_REQUEST));
 		BYTE* pbExtraBytes = &((BYTE*)ret->pioRecvPci)[sizeof(SCARD_IO_REQUEST)];
 
-		if (!Stream_EnsureRemainingCapacity(s, cbExtraBytes + 16))
+		if (!Stream_EnsureRemainingCapacity(s, cbExtraBytes + 16ull))
 		{
 			WLog_Print(log, WLOG_ERROR, "Stream_EnsureRemainingCapacity failed!");
 			return SCARD_F_INTERNAL_ERROR;

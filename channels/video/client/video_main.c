@@ -242,9 +242,9 @@ static PresentationContext* PresentationContext_new(VideoClientContext* video, B
 	VIDEO_PLUGIN* plugin = (VIDEO_PLUGIN*)video->handle;
 	WINPR_ASSERT(plugin);
 	WINPR_ASSERT(plugin->rdpcontext);
-	if (!h264_context_set_option(
-	        ret->h264, H264_CONTEXT_OPTION_HW_ACCEL,
-	        (UINT32)freerdp_settings_get_bool(plugin->rdpcontext->settings, FreeRDP_SoftwareGdi)))
+	if (!h264_context_set_option(ret->h264, H264_CONTEXT_OPTION_HW_ACCEL,
+	                             (UINT32)freerdp_settings_get_bool(plugin->rdpcontext->settings,
+	                                                               FreeRDP_SoftwareGdi) == 0))
 		goto fail;
 	if (!h264_context_reset(ret->h264, width, height))
 		goto fail;
@@ -436,8 +436,8 @@ static BOOL video_onMappedGeometryUpdate(MAPPED_GEOMETRY* geometry)
 		WLog_ERR(TAG, "geometry->left=%d < 0", geometry->left);
 		return FALSE;
 	}
-	presentation->surface->x =
-	    WINPR_ASSERTING_INT_CAST(uint32_t, geometry->topLevelLeft + geometry->left);
+	presentation->surface->x = WINPR_ASSERTING_INT_CAST(uint32_t, geometry->topLevelLeft) +
+	                           WINPR_ASSERTING_INT_CAST(uint32_t, geometry->left);
 
 	if (geometry->topLevelTop < 0)
 	{
@@ -449,8 +449,8 @@ static BOOL video_onMappedGeometryUpdate(MAPPED_GEOMETRY* geometry)
 		WLog_ERR(TAG, "geometry->top=%d < 0", geometry->top);
 		return FALSE;
 	}
-	presentation->surface->y =
-	    WINPR_ASSERTING_INT_CAST(uint32_t, geometry->topLevelTop + geometry->top);
+	presentation->surface->y = WINPR_ASSERTING_INT_CAST(uint32_t, geometry->topLevelTop) +
+	                           WINPR_ASSERTING_INT_CAST(uint32_t, geometry->top);
 
 	return TRUE;
 }
@@ -873,17 +873,21 @@ static UINT video_VideoData(VideoClientContext* context, const TSMM_VIDEO_DATA* 
 	VideoClientContextPriv* priv = context->priv;
 	WINPR_ASSERT(priv);
 
+	EnterCriticalSection(&priv->framesLock);
 	PresentationContext* presentation = priv->currentPresentation;
 	if (!presentation)
 	{
 		WLog_ERR(TAG, "no current presentation");
+		LeaveCriticalSection(&priv->framesLock);
 		return CHANNEL_RC_OK;
 	}
 
 	if (!PresentationContext_ref(presentation))
+	{
+		LeaveCriticalSection(&priv->framesLock);
 		return ERROR_INTERNAL_ERROR;
+	}
 
-	EnterCriticalSection(&priv->framesLock);
 	if (presentation->PresentationId != data->PresentationId)
 	{
 		WLog_ERR(TAG, "current presentation id=%" PRIu8 " doesn't match data id=%" PRIu8,
@@ -906,6 +910,8 @@ static UINT video_VideoData(VideoClientContext* context, const TSMM_VIDEO_DATA* 
 		H264_CONTEXT* h264 = presentation->h264;
 		const UINT64 startTime = winpr_GetTickCount64NS();
 		MAPPED_GEOMETRY* geom = presentation->geometry;
+		if (!geom)
+			goto out;
 
 		const RECTANGLE_16 rect = { 0, 0, WINPR_ASSERTING_INT_CAST(UINT16, surface->alignedWidth),
 			                        WINPR_ASSERTING_INT_CAST(UINT16, surface->alignedHeight) };

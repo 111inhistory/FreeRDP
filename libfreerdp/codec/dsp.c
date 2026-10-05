@@ -276,7 +276,7 @@ static BOOL freerdp_dsp_resample(FREERDP_DSP_CONTEXT* WINPR_RESTRICT context,
 
 	size_t idone = 0;
 	size_t odone = 0;
-	sox_error_t error =
+	soxr_error_t error =
 	    soxr_process(context->sox, src, sframes, &idone, Stream_Buffer(context->common.resample),
 	                 Stream_Capacity(context->common.resample) / rbytes, &odone);
 	if (!Stream_SetLength(context->common.resample, odone * rbytes))
@@ -284,7 +284,7 @@ static BOOL freerdp_dsp_resample(FREERDP_DSP_CONTEXT* WINPR_RESTRICT context,
 
 	*data = Stream_Buffer(context->common.resample);
 	*length = Stream_Length(context->common.resample);
-	return (error == 0) != 0;
+	return (error == nullptr);
 #else
 	WLog_ERR(TAG, "Missing resample support, recompile -DWITH_SOXR=ON or -DWITH_DSP_FFMPEG=ON");
 	return FALSE;
@@ -569,13 +569,13 @@ static BOOL freerdp_dsp_decode_mp3(FREERDP_DSP_CONTEXT* WINPR_RESTRICT context,
 	if (!valid_mp3_format(context))
 		return FALSE;
 	const size_t buffer_size =
-	    2 * context->common.format.nChannels * context->common.format.nSamplesPerSec;
+	    2ull * context->common.format.nChannels * context->common.format.nSamplesPerSec;
 
-	if (!Stream_EnsureCapacity(context->common.buffer, 2 * buffer_size))
+	if (!Stream_EnsureCapacity(context->common.buffer, 2ull * buffer_size))
 		return FALSE;
 
 	short* pcm_l = Stream_BufferAs(context->common.buffer, short);
-	short* pcm_r = Stream_BufferAs(context->common.buffer, short) + buffer_size;
+	short* pcm_r = Stream_BufferAs(context->common.buffer, short) + (buffer_size / sizeof(short));
 	const int rc = hip_decode(
 	    context->hip,
 	    WINPR_CAST_CONST_PTR_AWAY(/* API is not modifying content */ src, unsigned char*), size,
@@ -584,7 +584,7 @@ static BOOL freerdp_dsp_decode_mp3(FREERDP_DSP_CONTEXT* WINPR_RESTRICT context,
 	if (rc <= 0)
 		return FALSE;
 
-	if (!Stream_EnsureRemainingCapacity(out, (size_t)rc * context->common.format.nChannels * 2))
+	if (!Stream_EnsureRemainingCapacity(out, (size_t)rc * context->common.format.nChannels * 2ull))
 		return FALSE;
 
 	for (int x = 0; x < rc; x++)
@@ -610,7 +610,7 @@ static BOOL freerdp_dsp_encode_mp3(FREERDP_DSP_CONTEXT* WINPR_RESTRICT context,
 	    size / context->common.format.nChannels / context->common.format.wBitsPerSample / 8;
 
 	/* Ensure worst case buffer size for mp3 stream taken from LAME header */
-	if (!Stream_EnsureRemainingCapacity(out, 5 / 4 * samples_per_channel + 7200))
+	if (!Stream_EnsureRemainingCapacity(out, 5ull / 4ull * samples_per_channel + 7200ull))
 		return FALSE;
 
 	samples_per_channel = size / 2 /* size of a sample */ / context->common.format.nChannels;
@@ -713,13 +713,12 @@ static BOOL freerdp_dsp_encode_opus(FREERDP_DSP_CONTEXT* WINPR_RESTRICT context,
 
 	const size_t src_frames = size / sizeof(opus_int16) / context->common.format.nChannels;
 	const opus_int16* src_data = WINPR_PACKED_ALIGN_CAST(const opus_int16*, src);
-	const opus_int32 frames = opus_encode(
+	const opus_int32 bytes = opus_encode(
 	    context->opus_encoder, src_data, WINPR_ASSERTING_INT_CAST(opus_int32, src_frames),
 	    Stream_Pointer(out), WINPR_ASSERTING_INT_CAST(opus_int32, max_size));
-	if (frames < 0)
+	if (bytes < 0)
 		return FALSE;
-	return Stream_SafeSeek(out,
-	                       (size_t)frames * context->common.format.nChannels * sizeof(int16_t));
+	return Stream_SafeSeek(out, (size_t)bytes);
 }
 #endif
 
@@ -886,7 +885,7 @@ static BOOL freerdp_dsp_encode_ima_adpcm(FREERDP_DSP_CONTEXT* WINPR_RESTRICT con
 		return FALSE;
 	if (!Stream_EnsureRemainingCapacity(out, size))
 		return FALSE;
-	if (!Stream_EnsureRemainingCapacity(context->common.buffer, size + 64))
+	if (!Stream_EnsureRemainingCapacity(context->common.buffer, size + 64ull))
 		return FALSE;
 
 	const size_t align = (context->common.format.nChannels > 1) ? 32 : 4;
@@ -1267,9 +1266,8 @@ FREERDP_DSP_CONTEXT* freerdp_dsp_context_new(BOOL encoder)
 		goto fail;
 
 	{
-		int rc;
 		int val = 1;
-		rc = gsm_option(context->gsm, GSM_OPT_WAV49, &val);
+		int rc = gsm_option(context->gsm, GSM_OPT_WAV49, &val);
 
 		if (rc < 0)
 			goto fail;

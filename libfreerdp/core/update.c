@@ -304,7 +304,7 @@ static BOOL update_write_bitmap_data(rdpUpdate* update_pub, wStream* s, BITMAP_D
 
 	WINPR_ASSERT(bitmapData);
 
-	if (!Stream_EnsureRemainingCapacity(s, 64 + bitmapData->bitmapLength))
+	if (!Stream_EnsureRemainingCapacity(s, 64ull + bitmapData->bitmapLength))
 		return FALSE;
 
 	if (update->common.autoCalculateBitmapData)
@@ -466,6 +466,9 @@ BOOL update_recv_play_sound(rdpUpdate* update, wStream* s)
 	PLAY_SOUND_UPDATE play_sound = WINPR_C_ARRAY_INIT;
 
 	WINPR_ASSERT(update);
+
+	if (!rdp_has_reached_state(update->context->rdp, CONNECTION_STATE_ACTIVE))
+		return FALSE;
 
 	if (!update_read_play_sound(s, &play_sound))
 		return FALSE;
@@ -866,6 +869,9 @@ BOOL update_recv_pointer(rdpUpdate* update, wStream* s)
 	rdpContext* context = update->context;
 	rdpPointerUpdate* pointer = update->pointer;
 
+	if (!rdp_has_reached_state(update->context->rdp, CONNECTION_STATE_ACTIVE))
+		return FALSE;
+
 	if (!Stream_CheckAndLogRequiredLength(TAG, s, 2 + 2))
 		return FALSE;
 
@@ -961,6 +967,9 @@ BOOL update_recv(rdpUpdate* update, wStream* s)
 	rdpContext* context = update->context;
 
 	WINPR_ASSERT(context);
+
+	if (!rdp_has_reached_state(update->context->rdp, CONNECTION_STATE_ACTIVE))
+		return FALSE;
 
 	if (!Stream_CheckAndLogRequiredLength(TAG, s, 2))
 		return FALSE;
@@ -2408,7 +2417,7 @@ WINPR_ATTR_NODISCARD static BOOL
 update_write_pointer_color(wStream* s, const POINTER_COLOR_UPDATE* pointer_color)
 {
 	WINPR_ASSERT(pointer_color);
-	if (!Stream_EnsureRemainingCapacity(s, 32 + pointer_color->lengthAndMask +
+	if (!Stream_EnsureRemainingCapacity(s, 32ull + pointer_color->lengthAndMask +
 	                                           pointer_color->lengthXorMask))
 		return FALSE;
 
@@ -2460,7 +2469,7 @@ WINPR_ATTR_NODISCARD static BOOL update_write_pointer_large(wStream* s,
 {
 	WINPR_ASSERT(pointer);
 
-	if (!Stream_EnsureRemainingCapacity(s, 32 + pointer->lengthAndMask + pointer->lengthXorMask))
+	if (!Stream_EnsureRemainingCapacity(s, 32ull + pointer->lengthAndMask + pointer->lengthXorMask))
 		return FALSE;
 
 	Stream_Write_UINT16(s, pointer->xorBpp);

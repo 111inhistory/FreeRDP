@@ -31,8 +31,7 @@
 #include <scoped_guard.hpp>
 
 #include "dialogs/sdl_dialogs.hpp"
-
-#include <sdl_aad_helper.hpp>
+#include <freerdp/client/aad_helper.h>
 
 static constexpr auto sdl_allow_screensaver = "sdl-allow-screensaver";
 
@@ -58,8 +57,8 @@ SdlContext::SdlContext(rdpContext* context)
 	instance->PresentGatewayMessage = sdl_present_gateway_message;
 	instance->ChooseSmartcard = sdl_choose_smartcard;
 	instance->RetryDialog = sdl_retry_dialog;
+	instance->GetAccessToken = client_failsafe_get_access_token;
 
-	instance->GetAccessToken = getAccessToken;
 	/* TODO: Client display set up */
 
 	_args.push_back({ sdl_allow_screensaver, COMMAND_LINE_VALUE_BOOL, nullptr, BoolValueFalse,
@@ -132,23 +131,6 @@ bool SdlContext::shallAbort(bool ignoreDialogs)
 		return !getDialog().isRunning();
 	}
 	return false;
-}
-
-/* matches pGetAccessToken's fixed signature exactly, so it can be assigned to
- * instance->GetAccessToken directly; forwards into the shared implementation via va_list
- * (vprintf-style) along with this connection's own storage slot. */
-BOOL SdlContext::getAccessToken(freerdp* instance, AccessTokenType tokenType, char** token,
-                                size_t count, ...)
-{
-	auto sdl = get_context(instance->context);
-	WINPR_ASSERT(sdl);
-
-	va_list ap = {};
-	va_start(ap, count);
-	const BOOL rc = sdl_aad_helper_get_access_token_v(instance, sdl->getAadAuthHelper(), tokenType,
-	                                                  token, count, ap);
-	va_end(ap);
-	return rc;
 }
 
 /* Called before a connection is established.
@@ -334,9 +316,6 @@ void SdlContext::postDisconnect(freerdp* instance)
 
 	auto sdl = get_context(instance->context);
 	sdl->setConnected(false);
-
-	if (auto& helper = sdl->getAadAuthHelper())
-		helper->stop();
 
 	gdi_free(instance);
 }
@@ -862,20 +841,45 @@ SdlContext::updateDisplayOffsetsForNeighbours(SDL_DisplayID id,
 			continue;
 
 		bool neighbor = false;
-		if (alignX(entry.second.first, first.first))
+		const bool ax = alignX(entry.second.first, first.first);
+		const bool ay = alignY(entry.second.first, first.first);
+
+		/* Offset along the axis that does not touch, converted from logical to pixel
+		 * units of the reference display. Without this, a monitor that is adjacent on
+		 * one axis but shifted on the other (e.g. a wider monitor above another, or a
+		 * rotated monitor that is not top aligned) keeps offset 0 on that axis, the
+		 * layout sent to the server no longer matches the local one and pointer input
+		 * lands offset by that difference. */
+		auto crossOffset = [](int ePos, int fPos, int fLogical, int fPixel) -> int
+		{
+			if (fLogical <= 0)
+				return ePos - fPos;
+			return static_cast<int>(
+			    std::lround(static_cast<double>(ePos - fPos) * fPixel / fLogical));
+		};
+
+		if (ax)
 		{
 			if (entry.second.first.x < first.first.x)
 				entry.second.second.x = first.second.x - entry.second.second.w;
 			else
 				entry.second.second.x = first.second.x + first.second.w;
+			if (!ay)
+				entry.second.second.y =
+				    first.second.y +
+				    crossOffset(entry.second.first.y, first.first.y, first.first.h, first.second.h);
 			neighbor = true;
 		}
-		if (alignY(entry.second.first, first.first))
+		if (ay)
 		{
 			if (entry.second.first.y < first.first.y)
 				entry.second.second.y = first.second.y - entry.second.second.h;
 			else
 				entry.second.second.y = first.second.y + first.second.h;
+			if (!ax)
+				entry.second.second.x =
+				    first.second.x +
+				    crossOffset(entry.second.first.x, first.first.x, first.first.w, first.second.w);
 			neighbor = true;
 		}
 
@@ -1619,11 +1623,6 @@ bool SdlContext::credentialsRead() const
 void SdlContext::setCredentialsRead()
 {
 	_credentialsRead = true;
-}
-
-std::shared_ptr<SdlAadAuthHelper>& SdlContext::getAadAuthHelper()
-{
-	return _aadAuthHelper;
 }
 
 bool SdlContext::resizeToScale(SdlWindow* window)
