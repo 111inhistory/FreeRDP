@@ -549,8 +549,12 @@ void SdlRailWindow::setStyle(uint32_t style, uint32_t exStyle)
 	{
 		/* WS_CAPTION is WS_BORDER | WS_DLGFRAME; partial match is only a border. */
 		const bool captioned = (style & WS_CAPTION) == WS_CAPTION;
+		/* An unowned window without tool/noactivate flags is a standalone top-level window
+		 * (e.g. splash screens, borderless custom login dialogs, Qt/Electron borderless apps). */
+		const bool isUnownedTopLevel =
+		    (_ownerId == 0) && ((exStyle & (WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE)) == 0);
 		const bool isDialogOrApp =
-		    captioned ||
+		    captioned || isUnownedTopLevel ||
 		    ((style & (WS_SYSMENU | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX)) != 0) ||
 		    ((exStyle & WS_EX_APPWINDOW) != 0);
 		const bool isToolOrPopup =
@@ -756,26 +760,36 @@ bool SdlRailWindow::reconcile(SDL_Window* parent, const SDL_Rect& parentRect)
 		_extentsApplied = ext;
 
 	/* Clamp min size hints to target bounds so stale hints do not block programmatic resize.
-	 * Defer size hints and programmatic resize during active WM move/resize grab. */
+	 * Defer size hints and programmatic resize during active WM move/resize grab.
+	 * For fixed-size windows without WS_THICKFRAME (e.g. splash banners, fixed dialogs),
+	 * pin min_size == max_size == current size so tiling WMs (like niri) treat them as fixed/floating. */
 	const bool wmOwnsGeometry =
 	    _localMoveActive || geometryFrozen() || _fullscreen;
 	if ((_minMaxDirty || _geometryDirty) && !wmOwnsGeometry)
 	{
 		const SDL_Rect vis = targetOuterRect();
 		const SDL_Rect localVis = toLocal(vis);
-		const SDL_Point minS = toLocal(SDL_Point{ _minSize.x, _minSize.y });
-		const SDL_Point maxS = toLocal(SDL_Point{ _maxSize.x, _maxSize.y });
-		SDL_SetWindowMinimumSize(_win->window(), std::clamp(minS.x, 0, localVis.w),
-		                         std::clamp(minS.y, 0, localVis.h));
-		if (maxS.x > 0 || maxS.y > 0)
+		if (!styleResizable() && !_isPopup && localVis.w > 0 && localVis.h > 0)
 		{
-			int maxW = (maxS.x > 0) ? std::max(1, maxS.x) : 0;
-			int maxH = (maxS.y > 0) ? std::max(1, maxS.y) : 0;
-			SDL_SetWindowMaximumSize(_win->window(), maxW, maxH);
+			SDL_SetWindowMinimumSize(_win->window(), localVis.w, localVis.h);
+			SDL_SetWindowMaximumSize(_win->window(), localVis.w, localVis.h);
 		}
 		else
 		{
-			SDL_SetWindowMaximumSize(_win->window(), 0, 0);
+			const SDL_Point minS = toLocal(SDL_Point{ _minSize.x, _minSize.y });
+			const SDL_Point maxS = toLocal(SDL_Point{ _maxSize.x, _maxSize.y });
+			SDL_SetWindowMinimumSize(_win->window(), std::clamp(minS.x, 0, localVis.w),
+			                         std::clamp(minS.y, 0, localVis.h));
+			if (maxS.x > 0 || maxS.y > 0)
+			{
+				int maxW = (maxS.x > 0) ? std::max(1, maxS.x) : 0;
+				int maxH = (maxS.y > 0) ? std::max(1, maxS.y) : 0;
+				SDL_SetWindowMaximumSize(_win->window(), maxW, maxH);
+			}
+			else
+			{
+				SDL_SetWindowMaximumSize(_win->window(), 0, 0);
+			}
 		}
 		_minMaxDirty = false;
 	}

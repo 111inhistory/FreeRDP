@@ -351,6 +351,18 @@ void SdlRail::handleFocus(SDL_WindowID id, bool gained)
 	if (!gained && (_localMove.id == static_cast<uint32_t>(appWindow->id())))
 		return;
 
+	/* On tiling compositors (e.g. niri), there is no classical taskbar minimize tray.
+	 * When focus returns to a "minimized" window, automatically restore it to its original size. */
+	if (gained && appWindow->railMinimized() && getenv("NIRI_SOCKET"))
+	{
+		WLog_DBG(TAG, "niri: focused minimized window id=0x%08" PRIx32 ", restoring original size",
+		         static_cast<UINT32>(appWindow->id()));
+		appWindow->setRailMinimized(false);
+		appWindow->invalidateAll();
+		sendSystemCommand(appWindow, SC_RESTORE);
+		(void)sdl_push_user_event(SDL_EVENT_USER_UPDATE);
+	}
+
 	/* Fallback parent for orphaned popups. */
 	if (gained)
 		_focusedAppId = appWindow->id();
@@ -380,6 +392,7 @@ void SdlRail::ensureActive(SDL_WindowID id)
 	auto* appWindow = getWindowBySdlId(id);
 	if (!appWindow || (appWindow->isPopup() && !appWindow->isFullscreen()) || !appWindow->window())
 		return;
+
 	const auto wid = static_cast<uint32_t>(appWindow->id());
 	if (wid == _clientActiveId)
 		return;
