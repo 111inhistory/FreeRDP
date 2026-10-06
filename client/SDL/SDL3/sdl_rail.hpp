@@ -61,6 +61,11 @@ class SdlRail
 		return _enabled;
 	}
 
+	[[nodiscard]] bool hasEverBeenEnabled() const
+	{
+		return _hasEverBeenEnabled;
+	}
+
 	/* Paint all RAIL windows (window-mapped GFX surface, or legacy desktop region).
 	 * `damage` = server-updated desktop rects for this cycle (empty = nothing new). */
 	bool paint(SDL_Surface* primary, SDL_PixelFormat fallbackFormat,
@@ -196,6 +201,7 @@ class SdlRail
 	RailClientContext* _rail = nullptr;
 	/* Written on the RDP thread (RemoteApp mode toggles), read lock-free on the main thread. */
 	std::atomic<bool> _enabled = false;
+	std::atomic<bool> _hasEverBeenEnabled = false;
 	bool _refreshSent = false; /* one full RefreshRect per connection, at first window realize */
 	/* Last work area reported to the server (server coordinates). */
 	SDL_Rect _sentWorkArea = { 0, 0, 0, 0 };

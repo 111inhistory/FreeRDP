@@ -421,6 +421,8 @@ SdlRailWindow* SdlRail::addWindow(uint64_t id, const SDL_Rect& rect)
 void SdlRail::enableRemoteAppMode(bool enable)
 {
 	_enabled = enable;
+	if (enable)
+		_hasEverBeenEnabled = true;
 }
 
 bool SdlRail::paint(SDL_Surface* primary, SDL_PixelFormat fallbackFormat,
@@ -775,6 +777,7 @@ bool SdlRail::uninit(WINPR_ATTR_UNUSED RailClientContext* rail)
 		kv.second.markDeleted();
 	_rail = nullptr;
 	_enabled = false;
+	_hasEverBeenEnabled = false;
 	lock.unlock();
 	(void)sdl_push_user_event(SDL_EVENT_USER_UPDATE);
 	return true;

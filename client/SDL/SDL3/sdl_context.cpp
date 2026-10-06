@@ -408,6 +408,11 @@ bool SdlContext::createWindows()
 
 		Uint32 flags = SDL_WINDOW_HIGH_PIXEL_DENSITY;
 
+		if (freerdp_settings_get_bool(settings, FreeRDP_RemoteApplicationMode))
+		{
+			flags |= SDL_WINDOW_HIDDEN;
+		}
+
 		if (freerdp_settings_get_bool(settings, FreeRDP_Fullscreen) &&
 		    !freerdp_settings_get_bool(settings, FreeRDP_UseMultimon))
 		{
@@ -968,8 +973,10 @@ SDL_PixelFormat SdlContext::pixelFormat() const
 
 bool SdlContext::addDisplayWindow(SDL_DisplayID id)
 {
-	const auto flags =
+	auto flags =
 	    SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_FULLSCREEN | SDL_WINDOW_BORDERLESS;
+	if (freerdp_settings_get_bool(context()->settings, FreeRDP_RemoteApplicationMode))
+		flags |= SDL_WINDOW_HIDDEN;
 	auto title = sdl::utils::windowTitle(context()->settings);
 	auto w = SdlWindow::create(id, title, flags);
 	_windows.emplace(w.id(), std::move(w));
@@ -1666,6 +1673,15 @@ bool SdlContext::drawToWindows(const std::vector<SDL_Rect>& rects)
 
 	/* Non-RAIL mode (e.g. Non-Monitored Desktop during UAC / Consent UI): show the desktop window.
 	 */
+	if (freerdp_settings_get_bool(context()->settings, FreeRDP_RemoteApplicationMode))
+	{
+		/* In RemoteApp mode: do not show the desktop lock/logon screen during startup.
+		 * Only show the fallback desktop if the server explicitly dispatched a non-monitored desktop
+		 * (e.g. UAC prompt) AFTER initial RAIL handshake has completed. */
+		if (!_rail.hasEverBeenEnabled())
+			return true;
+	}
+
 	bool firstShow = false;
 	for (auto& window : _windows)
 	{
