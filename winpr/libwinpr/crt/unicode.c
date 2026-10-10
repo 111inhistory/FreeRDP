@@ -706,13 +706,18 @@ SSIZE_T winpr_utfEscapedStringToUtf8(char* str, size_t len)
 		char* next = nullptr;
 		const INT32 code = escapeToNumber(cur, &next);
 		if (code < 0)
+		{
+			/* Not a \uXXXX escape (e.g. "C:\users"): keep it as literal text */
+			cur += 2;
+			clen = len - (size_t)(cur - str);
 			continue;
+		}
 
 		WCHAR wc[2] = WINPR_C_ARRAY_INIT;
-		wc[0] = ((WCHAR)code);
+		winpr_Data_Write_UINT16(&wc[0], (WCHAR)code);
 
 		// Check for high surrogate
-		if ((wc[0] & 0xd800) == 0xd800)
+		if ((code & 0xd800) == 0xd800)
 		{
 			const INT32 code2 = escapeToNumber(next, &next);
 			if (code2 < 0)
@@ -722,7 +727,7 @@ SSIZE_T winpr_utfEscapedStringToUtf8(char* str, size_t len)
 			if ((code2 & 0xdc00) != 0xdc00)
 				return -1;
 
-			wc[1] = (WCHAR)code2;
+			winpr_Data_Write_UINT16(&wc[1], (WCHAR)code2);
 		}
 
 		char utf8[8] = WINPR_C_ARRAY_INIT;
@@ -738,6 +743,10 @@ SSIZE_T winpr_utfEscapedStringToUtf8(char* str, size_t len)
 			const size_t rlen = strnlen(next, len);
 			memmove(&cur[(size_t)rc], next, rlen + 1);
 		}
+
+		/* Continue after the decoded bytes, so they are never decoded again */
+		cur += rc;
+		clen = len - (size_t)(cur - str);
 	}
 	return (SSIZE_T)strnlen(str, len);
 }
