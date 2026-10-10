@@ -110,6 +110,7 @@ class SdlRailWindow
 
 	/* Server min/max tracking size (RAIL MinMaxInfo); applied in reconcile. */
 	void setMinMaxSize(SDL_Point minSize, SDL_Point maxSize);
+	[[nodiscard]] bool isResizable() const;
 
 	/* Server outside resize margins. */
 	void setResizeMargins(int left, int top, int right, int bottom);

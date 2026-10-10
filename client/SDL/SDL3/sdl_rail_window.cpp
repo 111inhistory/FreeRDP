@@ -374,6 +374,12 @@ bool SdlRailWindow::isFrame() const
 	return _frame;
 }
 
+bool SdlRailWindow::isResizable() const
+{
+	std::unique_lock lock(_gfxLock);
+	return styleResizable();
+}
+
 bool SdlRailWindow::styleResizable() const
 {
 	/* Once resizable, keep band eligibility to avoid oscillation. */
@@ -454,6 +460,9 @@ float SdlRailWindow::contentScale() const
 		return 1.0f;
 	if (_win && _win->window())
 	{
+		const float pd = SDL_GetWindowPixelDensity(_win->window());
+		if (pd > 0.0f)
+			return pd;
 		const float s = SDL_GetWindowDisplayScale(_win->window());
 		if (s > 0.0f)
 			return s;
@@ -604,6 +613,7 @@ bool SdlRailWindow::create(SDL_Window* parent, const SDL_Rect& parentRect)
 	/* Local window = server rect + band insets (the outside resize band is part of our window). */
 	const SDL_Rect vis = targetOuterRect();
 	_appliedInsets = bandInsets(); /* the insets baked into the window we are about to create */
+	const SDL_Rect localVis = toLocal(vis);
 	/* Realize full-display popups as fullscreen toplevels on Wayland. */
 	const bool fullscreen = _isPopup && !caps.positionsReadable && isFullDisplaySize();
 	if (_isPopup && parent && !fullscreen)
@@ -629,7 +639,6 @@ bool SdlRailWindow::create(SDL_Window* parent, const SDL_Rect& parentRect)
 			flags |= SDL_WINDOW_TRANSPARENT;
 		if (sdl::utils::isWaylandDriver())
 			flags |= SDL_WINDOW_HIGH_PIXEL_DENSITY;
-		const SDL_Rect localVis = toLocal(vis);
 		_win = std::make_unique<SdlWindow>(
 		    SdlWindow::create(SDL_GetPrimaryDisplay(), _title, flags, localVis));
 	}
@@ -640,6 +649,11 @@ bool SdlRailWindow::create(SDL_Window* parent, const SDL_Rect& parentRect)
 		return false;
 	}
 	_win->resizeable(styleResizable());
+	if (!styleResizable() && !_isPopup && localVis.w > 0 && localVis.h > 0)
+	{
+		SDL_SetWindowMinimumSize(_win->window(), localVis.w, localVis.h);
+		SDL_SetWindowMaximumSize(_win->window(), localVis.w, localVis.h);
+	}
 	if (fullscreen)
 	{
 		/* Cover the whole output (panel included) - the Wayland-correct way to reach 0,0. */
@@ -778,8 +792,7 @@ bool SdlRailWindow::reconcile(SDL_Window* parent, const SDL_Rect& parentRect)
 		{
 			const SDL_Point minS = toLocal(SDL_Point{ _minSize.x, _minSize.y });
 			const SDL_Point maxS = toLocal(SDL_Point{ _maxSize.x, _maxSize.y });
-			SDL_SetWindowMinimumSize(_win->window(), std::clamp(minS.x, 0, localVis.w),
-			                         std::clamp(minS.y, 0, localVis.h));
+			SDL_SetWindowMinimumSize(_win->window(), std::max(0, minS.x), std::max(0, minS.y));
 			if (maxS.x > 0 || maxS.y > 0)
 			{
 				int maxW = (maxS.x > 0) ? std::max(1, maxS.x) : 0;

@@ -1091,11 +1091,16 @@ void SdlRail::sendClientWindowMove(SdlRailWindow* appWindow, const SDL_Rect& ser
 void SdlRail::reportAndAdopt(SdlRailWindow* appWindow, int x, int y, int w, int h)
 {
 	/* Local geometry -> server rect: strip the client-side band insets. */
-	const SDL_Rect rect = appWindow->serverRect({ x, y, w, h });
+	SDL_Rect rect = appWindow->serverRect({ x, y, w, h });
+	const SDL_Rect cur = appWindow->windowRect();
+	if (!appWindow->isResizable())
+	{
+		rect.w = cur.w;
+		rect.h = cur.h;
+	}
 	/* Report outer frame to server (inflate by margins). */
 	const bool maximized = appWindow->effectivelyMaximized();
 	/* Report geometry if changed. */
-	const SDL_Rect cur = appWindow->windowRect();
 	const bool unchanged = SDL_RectsEqual(&rect, &cur);
 	if (!maximized && !unchanged)
 		sendClientWindowMove(appWindow, rect);
@@ -1249,11 +1254,33 @@ void SdlRail::syncGeometry(SDL_WindowID id)
 	else
 		clampIntoDesktop(lx, ly, sw, sh);
 
-	/* Check if window settled at applied target. */
-	if ((sw == vis.w) && (sh == vis.h) && (!posKnown || ((lx == vis.x) && (ly == vis.y))))
+	/* Check if window settled at applied target with scaling rounding tolerance. */
+	const float s = w->contentScale();
+	const int tol = (s > 1.0f) ? static_cast<int>(std::ceil(s)) : 0;
+	const bool sizeSettled = (std::abs(sw - vis.w) <= tol) && (std::abs(sh - vis.h) <= tol);
+	const bool posSettled = !posKnown || ((lx == vis.x) && (ly == vis.y));
+
+	if (sizeSettled && posSettled)
 	{
 		w->clearGeomApplyPending();
 		return; /* Ignore self-echo when geometry converged. */
+	}
+
+	/* Fixed-size windows: client must never report size changes to Windows server. */
+	if (!w->isResizable())
+	{
+		w->clearGeomApplyPending();
+		if (!posKnown)
+		{
+			/* On Wayland, positions are unreadable and size is server-controlled. Nothing to sync. */
+			return;
+		}
+		const SDL_Rect cur = w->windowRect();
+		if ((lx == cur.x) && (ly == cur.y))
+			return;
+		/* Platforms with readable positions (e.g. X11): sync position only, keep server dimensions. */
+		reportAndAdopt(w, lx, ly, cur.w, cur.h);
+		return;
 	}
 
 	/* Drop transient echo events while client geometry application is in flight.
@@ -1314,7 +1341,7 @@ void SdlRail::handleWaylandResize(SDL_WindowID id)
 		return;
 	std::unique_lock lock(_windowsLock);
 	auto* appWindow = getWindowBySdlId(id);
-	if (!appWindow || appWindow->isPopup() || !appWindow->window())
+	if (!appWindow || appWindow->isPopup() || !appWindow->window() || !appWindow->isResizable())
 		return;
 	/* Track resize for active dragged window. */
 	if (static_cast<uint32_t>(appWindow->id()) == _localMove.id)
@@ -1332,7 +1359,9 @@ void SdlRail::handleWaylandResize(SDL_WindowID id)
 
 	const SDL_Rect serverOuter = appWindow->toServer({ 0, 0, w, h });
 	const SDL_Rect vis = appWindow->outerRect();
-	if ((serverOuter.w == vis.w) && (serverOuter.h == vis.h))
+	const float s = appWindow->contentScale();
+	const int tol = (s > 1.0f) ? static_cast<int>(std::ceil(s)) : 0;
+	if ((std::abs(serverOuter.w - vis.w) <= tol) && (std::abs(serverOuter.h - vis.h) <= tol))
 		return; /* echo of a size we already reported/applied - nothing new */
 	/* Compositor snap/tile: report via the debounced sync (never from transitional state). */
 	lock.unlock();
