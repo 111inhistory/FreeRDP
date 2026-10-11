@@ -20,6 +20,10 @@
 
 #include <SDL3/SDL.h>
 
+/* Set a toplevel's layout bounds to its own logical size, excluding subsurfaces.
+ * Double-buffered: caller commits the surface (or presents its renderer). */
+void sdl_wayland_set_window_geometry(SDL_Window* window);
+
 /* Experimental RAIL popup surfaces; SDL still owns rendering and input. */
 bool sdl_wayland_subsurface_create(SDL_Window* window, SDL_Window* parent, int x, int y);
 void sdl_wayland_subsurface_destroy(SDL_Window* window);

@@ -613,6 +613,7 @@ void SdlWindow::updateSurface()
 		return;
 	if (!SDL_RenderTexture(_renderer, _renderTarget, nullptr, nullptr))
 		return;
+	sdl_wayland_set_window_geometry(_window);
 	if (!SDL_RenderPresent(_renderer))
 		return;
 }
@@ -697,6 +698,7 @@ bool SdlWindow::paintResizeFrame(SDL_Surface* surface, SDL_Point off, bool conte
 	if (!SDL_SetRenderTarget(_renderer, nullptr))
 		return false;
 	std::ignore = SDL_RenderTexture(_renderer, _renderTarget, nullptr, nullptr);
+	sdl_wayland_set_window_geometry(_window);
 	std::ignore = SDL_RenderPresent(_renderer);
 	return true;
 }

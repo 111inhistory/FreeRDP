@@ -62,6 +62,29 @@ void subcompositor_removed(WINPR_ATTR_UNUSED void* data, WINPR_ATTR_UNUSED wl_re
 }
 } // namespace
 
+void sdl_wayland_set_window_geometry(SDL_Window* window)
+{
+	if (!window || !sdl::utils::isWaylandDriver())
+		return;
+	/* RAIL owns borderless surfaces; leave decorated/libdecor geometry to SDL. */
+	if ((SDL_GetWindowFlags(window) & SDL_WINDOW_BORDERLESS) == 0)
+		return;
+	const auto props = SDL_GetWindowProperties(window);
+	auto* shell = static_cast<xdg_surface*>(
+	    SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WAYLAND_XDG_SURFACE_POINTER, nullptr));
+	if (!shell || !SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WAYLAND_XDG_TOPLEVEL_POINTER,
+	                                     nullptr))
+		return; /* Hidden/unrealized windows and custom subsurface roles have no toplevel. */
+	int w = 0;
+	int h = 0;
+	if (!SDL_GetWindowSize(window, &w, &h) || w <= 0 || h <= 0)
+		return;
+	/* Without explicit geometry, xdg-shell uses the union of the surface tree.
+	 * An out-of-bounds tooltip/menu must not move or resize the owner's WM tile.
+	 * SDL window coordinates are logical here, not the high-DPI buffer dimensions. */
+	xdg_surface_set_window_geometry(shell, 0, 0, w, h);
+}
+
 bool sdl_wayland_subsurface_create(SDL_Window* window, SDL_Window* parent, int x, int y)
 {
 	const auto props = SDL_GetWindowProperties(window);
@@ -104,6 +127,7 @@ bool sdl_wayland_subsurface_create(SDL_Window* window, SDL_Window* parent, int x
 	 * remain parent-commit state, so explicitly commit the parent after changing them. */
 	wl_subsurface_set_desync(role);
 	wl_subsurface_set_position(role, x, y);
+	sdl_wayland_set_window_geometry(parent);
 	wl_surface_commit(parentSurface);
 	wl_display_flush(display);
 	return true;
@@ -127,6 +151,7 @@ bool sdl_wayland_subsurface_position(SDL_Window* window, int x, int y)
 	ctx->x = x;
 	ctx->y = y;
 	wl_subsurface_set_position(ctx->role, x, y);
+	sdl_wayland_set_window_geometry(SDL_GetWindowParent(window));
 	wl_surface_commit(ctx->parent);
 	wl_display_flush(ctx->display);
 	return true;
@@ -161,6 +186,7 @@ bool sdl_wayland_subsurface_stack_above_parent(SDL_Window* window)
 	if (!ctx)
 		return false;
 	wl_subsurface_place_above(ctx->role, ctx->parent);
+	sdl_wayland_set_window_geometry(SDL_GetWindowParent(window));
 	wl_surface_commit(ctx->parent);
 	wl_display_flush(ctx->display);
 	return true;
@@ -350,6 +376,10 @@ bool sdl_wayland_begin_resize(SDL_Window* window, uint32_t xdgEdge)
 }
 
 #else /* !WITH_SDL_WAYLAND_NATIVE */
+
+void sdl_wayland_set_window_geometry(SDL_Window*)
+{
+}
 
 bool sdl_wayland_subsurface_create(SDL_Window*, SDL_Window*, int, int)
 {

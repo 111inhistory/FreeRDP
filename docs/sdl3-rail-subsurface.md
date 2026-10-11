@@ -13,6 +13,22 @@ attaches a null buffer because SDL hide is otherwise a no-op for custom roles.
 Other backends retain SDL popups. Unrelated toplevel stacking is still managed
 by the compositor.
 
+Borderless Wayland toplevels explicitly set `xdg_surface.window_geometry` to
+`(0, 0, logicalWidth, logicalHeight)` before renderer presentation and parent
+commits for subsurface creation/move/restacking. This keeps the WM layout bounds
+at the main surface instead of the default union with its subsurfaces. Decorated
+windows remain under SDL/libdecor geometry management. This is not a subsurface
+rendering or input-region clip; keep the niri clipping rule below.
+
+A native niri 26.04 test at 200% reproduced the default geometry expansion:
+a 794x949 main window became a 794x1009 layout with an above-window tooltip,
+954x949 with a right-overhanging menu and 914x949 with a left-overhanging popup.
+With explicit geometry its layout stayed 794x949 through all three cases,
+restacking and hiding; resizing the main window updated it to 794x829.
+The protocol trace used logical dimensions, not 1588x1898 buffer pixels.
+Real application popup visibility and clicks outside the owner's geometry still
+need interactive regression testing.
+
 Place this niri rule **after** global/DMS rules:
 
 ```kdl
