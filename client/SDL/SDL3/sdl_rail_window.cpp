@@ -425,8 +425,13 @@ static SDL_Rect stripInsets(const SDL_Rect& r, const SDL_Rect& i)
 bool SdlRailWindow::isFullDisplaySize() const
 {
 	SDL_Rect disp{};
-	return SDL_GetDisplayBounds(SDL_GetPrimaryDisplay(), &disp) && (_windowRect.w >= disp.w) &&
-	       (_windowRect.h >= disp.h);
+	if (!SDL_GetDisplayBounds(SDL_GetPrimaryDisplay(), &disp))
+		return false;
+	/* Display bounds are SDL logical coordinates; WINDOW_ORDER dimensions are server
+	 * pixels. Compare in the same coordinate space, including before the SDL window
+	 * exists. Otherwise, e.g. an 1810x1200 dialog passes a 1600x1000 check at 200%. */
+	const SDL_Rect serverDisplay = toServer(disp);
+	return (_windowRect.w >= serverDisplay.w) && (_windowRect.h >= serverDisplay.h);
 }
 
 /* Server rect inflated by the FRESH band insets (the target the window should become); caller

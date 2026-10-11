@@ -38,4 +38,10 @@ Source references: [niri 26.04 Cargo.lock](https://github.com/niri-wm/niri/blob/
 and [its Smithay ClickGrab implementation](https://github.com/Smithay/smithay/blob/ff5fa7df392cecfba049ffed55cdaa4e98a8e7ef/src/input/pointer/grab.rs).
 Retest this compatibility assumption when upgrading niri/Smithay.
 
+Fullscreen size detection must compare server-pixel window dimensions with display
+bounds converted to server pixels. At 200%, an 1810x1200 owned Qt dialog is smaller
+than a 1600x1000 logical display (3200x2000 pixels), not a fullscreen popup. Retest
+with a new client process: cancelling fullscreen in niri does not recreate an
+already-promoted SDL toplevel as a subsurface.
+
 The native surface smoke test is not a substitute for these application tests.
