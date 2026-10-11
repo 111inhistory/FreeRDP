@@ -629,8 +629,11 @@ bool SdlRailWindow::create(SDL_Window* parent, const SDL_Rect& parentRect)
 	const SDL_Rect vis = targetOuterRect();
 	_appliedInsets = bandInsets(); /* the insets baked into the window we are about to create */
 	const SDL_Rect localVis = toLocal(vis);
-	/* Realize full-display popups as fullscreen toplevels on Wayland. */
-	const bool fullscreen = _isPopup && !caps.positionsReadable && isFullDisplaySize();
+	/* Only parentless, unowned full-display popups may become fullscreen toplevels.
+	 * An owned/fallback-parented dialog must retain its popup role, even if its
+	 * initial WINDOW_ORDER geometry temporarily spans the display. */
+	const bool fullscreen = _isPopup && (_ownerId == 0) && !parent &&
+	                        !caps.positionsReadable && isFullDisplaySize();
 	if (_isPopup && parent && !fullscreen)
 	{
 		/* Popups position parent-relative (wl_subsurface in the Wayland experiment). */
@@ -684,10 +687,12 @@ bool SdlRailWindow::create(SDL_Window* parent, const SDL_Rect& parentRect)
 
 	WLog_DBG(TAG,
 	         "create id=0x%08" PRIx32 " sdl=%" PRIu32 " %s vis=%dx%d+%d+%d margins=L%d,T%d,R%d,B%d "
-	         "transparent=%d",
+	         "transparent=%d owner=0x%08" PRIx32 " parent=%" PRIu32 " gfx=%" PRIu32 "x%" PRIu32
+	         " fullscreen=%d",
 	         static_cast<uint32_t>(_id), static_cast<uint32_t>(_win->id()), role(), vis.w, vis.h,
 	         vis.x, vis.y, _resizeMargins.x, _resizeMargins.y, _resizeMargins.w, _resizeMargins.h,
-	         caps.supportsTransparentWindows ? 1 : 0);
+	         caps.supportsTransparentWindows ? 1 : 0, static_cast<uint32_t>(_ownerId),
+	         parent ? SDL_GetWindowID(parent) : 0, _gfxW, _gfxH, fullscreen ? 1 : 0);
 	return true;
 }
 

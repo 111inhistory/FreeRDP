@@ -40,8 +40,21 @@ Retest this compatibility assumption when upgrading niri/Smithay.
 
 Fullscreen size detection must compare server-pixel window dimensions with display
 bounds converted to server pixels. At 200%, an 1810x1200 owned Qt dialog is smaller
-than a 1600x1000 logical display (3200x2000 pixels), not a fullscreen popup. Retest
-with a new client process: cancelling fullscreen in niri does not recreate an
+than a 1600x1000 logical display (3200x2000 pixels), not a fullscreen popup.
+Size alone is also insufficient to choose a role: only parentless, unowned
+full-display popups may be promoted. Owned or fallback-parented dialogs retain
+their popup role even if an initial window order reports display-sized geometry.
+Creation logs include Owner, parent SDL id, GFX dimensions and the fullscreen decision.
+
+A hidden native Wayland lifecycle regression reproduced the old behavior using an
+initial 3200x2000 window order followed by actual 1708x1328 geometry: the old window
+remained an unparented fullscreen 3200x2000 buffer. With the ownership guard it stays
+a native subsurface and resizes to 854x664 logical / 1708x1328 pixels. The same test
+checks fallback parenting, waiting for an unavailable owner and preserving the
+parentless, unowned full-display path. This is a controlled replay, not a recording
+of the application's initial window orders.
+
+Retest with a new client process: cancelling fullscreen in niri does not recreate an
 already-promoted SDL toplevel as a subsurface.
 
 The native surface smoke test is not a substitute for these application tests.
