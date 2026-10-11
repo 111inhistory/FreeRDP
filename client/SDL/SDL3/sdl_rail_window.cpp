@@ -577,7 +577,17 @@ void SdlRailWindow::setStyle(uint32_t style, uint32_t exStyle)
 		                     ((exStyle & (WS_EX_NOACTIVATE | WS_EX_APPWINDOW)) == 0) && !captioned;
 		_overlay = overlay;
 		_isPopup = noActivate || overlay || (isToolOrPopup && !isDialogOrApp);
-		_layered = ((exStyle & WS_EX_LAYERED) != 0) && !isDialogOrApp;
+		/* Some owned Qt tool popups (e.g. XtItClient settings/data management) carry
+		 * WS_EX_LAYERED but contain interactive UI, not a companion drop shadow.
+		 * Keep their popup role; narrowly exclude substantial, activating tool popups
+		 * from the shadow path. Size/flags are a heuristic, not Win32 role semantics. */
+		constexpr uint32_t toolPopupEx = WS_EX_LAYERED | WS_EX_TOOLWINDOW;
+		const bool isOwnedToolPopup =
+		    _isPopup && (_ownerId != 0) && ((style & WS_POPUP) != 0) &&
+		    ((exStyle & toolPopupEx) == toolPopupEx) &&
+		    ((exStyle & (WS_EX_NOACTIVATE | WS_EX_TOPMOST | WS_EX_TRANSPARENT)) == 0) &&
+		    (_windowRect.w >= 100) && (_windowRect.h >= 100);
+		_layered = ((exStyle & WS_EX_LAYERED) != 0) && !isDialogOrApp && !isOwnedToolPopup;
 		_clickThrough = ((exStyle & WS_EX_TRANSPARENT) != 0);
 		_popupClassified = true;
 	}
