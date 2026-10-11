@@ -1,9 +1,8 @@
-# SDL3 RAIL subsurface experiment
+# SDL3 RAIL Wayland subsurfaces
 
-Branch: `experiment/sdl3-rail-subsurface`.
-The existing `xdg_popup` implementation remains on
-`feat/sdl3-rail-wayland-niri` (`02342122`). The pre-input-fix version is
-`daaa3260`.
+Developed on `experiment/sdl3-rail-subsurface` and integrated into
+`feat/sdl3-rail-wayland-niri`. The previous `xdg_popup` implementation remains
+available at `02342122`; the pre-input-fix baseline is `daaa3260`.
 
 On Wayland builds with native Wayland support, RAIL popups use SDL custom-role
 windows with `wl_subsurface`. SDL still owns the buffers, renderer, scaling and
@@ -26,8 +25,9 @@ a 794x949 main window became a 794x1009 layout with an above-window tooltip,
 With explicit geometry its layout stayed 794x949 through all three cases,
 restacking and hiding; resizing the main window updated it to 794x829.
 The protocol trace used logical dimensions, not 1588x1898 buffer pixels.
-Real application popup visibility and clicks outside the owner's geometry still
-need interactive regression testing.
+The reported tooltip jump and left/right column expansion were subsequently
+confirmed fixed in application testing. Keep checking popup visibility and clicks
+outside the owner's geometry when changing this path.
 
 Place this niri rule **after** global/DMS rules:
 
@@ -70,7 +70,23 @@ checks fallback parenting, waiting for an unavailable owner and preserving the
 parentless, unowned full-display path. This is a controlled replay, not a recording
 of the application's initial window orders.
 
-Retest with a new client process: cancelling fullscreen in niri does not recreate an
-already-promoted SDL toplevel as a subsurface.
+`isFullscreenPopup()` describes the creation-time surface role, not the WM's live
+fullscreen state. Retest with a new client process: cancelling fullscreen in niri
+does not recreate an already-promoted SDL toplevel as a subsurface.
 
-The native surface smoke test is not a substitute for these application tests.
+## Maintenance invariants
+
+- Keep native protocol/lifetime handling in `sdl_wayland.cpp`; SDL owns buffers,
+  rendering, scaling and input, and `SdlRailWindow` owns RAIL role selection.
+- Position/restacking and owner geometry must precede the same parent commit;
+  child buffer commits remain independent. Use `commit_subsurface_parent()`.
+- Do not replace surface-local logical dimensions with buffer or server pixels.
+- Keep press-origin tracking niri-specific, and retain multi-button, release and
+  window-deletion cleanup. Test 100%, 150% and 200% pointer conversion.
+- Preserve native-support-disabled builds and the SDL popup path on other backends.
+
+Regression coverage: pointer-grab conversion (462 assertions), hidden native
+owned/fallback-parented/owner-unavailable/full-display lifecycle replay, native
+niri geometry before/after tooltip and menu overhang, main-window resize, and
+compilation without native Wayland support. These controlled tests do not replace
+application checks for dragging, menu clicks, popup order, hide/reopen and owner close.

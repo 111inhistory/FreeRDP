@@ -1,6 +1,6 @@
 /**
  * FreeRDP: A Remote Desktop Protocol Implementation
- * SDL3 Client - native Wayland interactive window move
+ * SDL3 Client - native Wayland surface roles and window operations
  *
  * Copyright 2026 Ibrahim Sevinc <ibrahim.sevinc.mail@gmail.com>
  *
@@ -59,6 +59,14 @@ void subcompositor_global(void* data, wl_registry* registry, uint32_t name,
 void subcompositor_removed(WINPR_ATTR_UNUSED void* data, WINPR_ATTR_UNUSED wl_registry* registry,
                           WINPR_ATTR_UNUSED uint32_t name)
 {
+}
+/* Subsurface position/z-order and the owner's geometry take effect in the same
+ * parent commit. Keep their ordering here; child buffers remain desynchronized. */
+void commit_subsurface_parent(SDL_Window* parent, const Subsurface& ctx)
+{
+	sdl_wayland_set_window_geometry(parent);
+	wl_surface_commit(ctx.parent);
+	wl_display_flush(ctx.display);
 }
 } // namespace
 
@@ -127,9 +135,7 @@ bool sdl_wayland_subsurface_create(SDL_Window* window, SDL_Window* parent, int x
 	 * remain parent-commit state, so explicitly commit the parent after changing them. */
 	wl_subsurface_set_desync(role);
 	wl_subsurface_set_position(role, x, y);
-	sdl_wayland_set_window_geometry(parent);
-	wl_surface_commit(parentSurface);
-	wl_display_flush(display);
+	commit_subsurface_parent(parent, *ctx);
 	return true;
 }
 
@@ -151,9 +157,7 @@ bool sdl_wayland_subsurface_position(SDL_Window* window, int x, int y)
 	ctx->x = x;
 	ctx->y = y;
 	wl_subsurface_set_position(ctx->role, x, y);
-	sdl_wayland_set_window_geometry(SDL_GetWindowParent(window));
-	wl_surface_commit(ctx->parent);
-	wl_display_flush(ctx->display);
+	commit_subsurface_parent(SDL_GetWindowParent(window), *ctx);
 	return true;
 }
 
@@ -186,13 +190,11 @@ bool sdl_wayland_subsurface_stack_above_parent(SDL_Window* window)
 	if (!ctx)
 		return false;
 	wl_subsurface_place_above(ctx->role, ctx->parent);
-	sdl_wayland_set_window_geometry(SDL_GetWindowParent(window));
-	wl_surface_commit(ctx->parent);
-	wl_display_flush(ctx->display);
+	commit_subsurface_parent(SDL_GetWindowParent(window), *ctx);
 	return true;
 }
 
-/* Dedicated seat/pointer on private queue to track configure serials independently of SDL. */
+/* Dedicated seat/pointer on private queue to track button serials independently of SDL. */
 struct WlMoveCtx
 {
 	wl_display* display = nullptr;

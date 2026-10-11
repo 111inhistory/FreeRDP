@@ -124,8 +124,8 @@ class SdlRailWindow
 	[[nodiscard]] uint64_t owner() const;
 	/* Popup = caption-less transient (menu/dropdown/tooltip); created as an SDL popup. */
 	[[nodiscard]] bool isPopup() const;
-	/* Full-screen popup treated as a top-level window. */
-	[[nodiscard]] bool isFullscreen() const;
+	/* Full-display popup created as a fullscreen toplevel, not live WM fullscreen state. */
+	[[nodiscard]] bool isFullscreenPopup() const;
 	/* Layered decoration (drop shadow); realized only while anchored to a visible popup. */
 	[[nodiscard]] bool isLayered() const;
 	/* Mark shadow anchored to an active popup. */
@@ -272,7 +272,7 @@ class SdlRailWindow
 	SDL_Point _maxSize = { 0, 0 };
 	bool _minMaxDirty = false;
 	bool _isPopup = false;
-	bool _fullscreen = false;      /* full-display popup as fullscreen toplevel (Wayland) */
+	bool _fullscreenPopup = false; /* immutable fullscreen toplevel role (Wayland) */
 	bool _layered = false;         /* caption-less WS_EX_LAYERED decoration (drop shadow) */
 	bool _clickThrough = false;    /* WS_EX_TRANSPARENT decoration */
 	bool _overlay = false;         /* layered tool window: drag image / drag feedback */

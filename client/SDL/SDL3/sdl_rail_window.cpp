@@ -344,10 +344,10 @@ bool SdlRailWindow::isPopup() const
 	return _isPopup;
 }
 
-bool SdlRailWindow::isFullscreen() const
+bool SdlRailWindow::isFullscreenPopup() const
 {
 	std::unique_lock lock(_gfxLock);
-	return _fullscreen;
+	return _fullscreenPopup;
 }
 
 bool SdlRailWindow::isLayered() const
@@ -632,9 +632,9 @@ bool SdlRailWindow::create(SDL_Window* parent, const SDL_Rect& parentRect)
 	/* Only parentless, unowned full-display popups may become fullscreen toplevels.
 	 * An owned/fallback-parented dialog must retain its popup role, even if its
 	 * initial WINDOW_ORDER geometry temporarily spans the display. */
-	const bool fullscreen = _isPopup && (_ownerId == 0) && !parent &&
-	                        !caps.positionsReadable && isFullDisplaySize();
-	if (_isPopup && parent && !fullscreen)
+	const bool fullscreenPopup = _isPopup && (_ownerId == 0) && !parent &&
+	                             !caps.positionsReadable && isFullDisplaySize();
+	if (_isPopup && parent)
 	{
 		/* Popups position parent-relative (wl_subsurface in the Wayland experiment). */
 		const SDL_Rect rel = { vis.x - parentRect.x, vis.y - parentRect.y, vis.w, vis.h };
@@ -642,7 +642,7 @@ bool SdlRailWindow::create(SDL_Window* parent, const SDL_Rect& parentRect)
 		_win = std::make_unique<SdlWindow>(
 		    SdlWindow::createPopup(parent, localRel, caps.supportsTransparentWindows, _overlay));
 	}
-	else if (_isPopup && !caps.positionsReadable && !fullscreen)
+	else if (_isPopup && !caps.positionsReadable && !fullscreenPopup)
 	{
 		/* No owner yet: a Wayland popup needs a parent; retry once an app window exists. */
 		WLog_VRB(TAG, "popup create deferred id=0x%08" PRIx32 ": no parent yet",
@@ -660,7 +660,7 @@ bool SdlRailWindow::create(SDL_Window* parent, const SDL_Rect& parentRect)
 		_win = std::make_unique<SdlWindow>(
 		    SdlWindow::create(SDL_GetPrimaryDisplay(), _title, flags, localVis));
 	}
-	if (!_win || !_win->window() || !_win->renderer())
+	if (!_win->window() || !_win->renderer())
 	{
 		_win.reset();
 		WLog_WARN(TAG, "create failed id=0x%08" PRIx32 " %s", static_cast<uint32_t>(_id), role());
@@ -672,10 +672,10 @@ bool SdlRailWindow::create(SDL_Window* parent, const SDL_Rect& parentRect)
 		SDL_SetWindowMinimumSize(_win->window(), localVis.w, localVis.h);
 		SDL_SetWindowMaximumSize(_win->window(), localVis.w, localVis.h);
 	}
-	if (fullscreen)
+	if (fullscreenPopup)
 	{
 		/* Cover the whole output (panel included) - the Wayland-correct way to reach 0,0. */
-		_fullscreen = true;
+		_fullscreenPopup = true;
 		SDL_SetWindowFullscreen(_win->window(), true);
 		WLog_DBG(TAG, "fullscreen id=0x%08" PRIx32 " %dx%d (WS_POPUP spans display)",
 		         static_cast<uint32_t>(_id), _windowRect.w, _windowRect.h);
@@ -692,7 +692,7 @@ bool SdlRailWindow::create(SDL_Window* parent, const SDL_Rect& parentRect)
 	         static_cast<uint32_t>(_id), static_cast<uint32_t>(_win->id()), role(), vis.w, vis.h,
 	         vis.x, vis.y, _resizeMargins.x, _resizeMargins.y, _resizeMargins.w, _resizeMargins.h,
 	         caps.supportsTransparentWindows ? 1 : 0, static_cast<uint32_t>(_ownerId),
-	         parent ? SDL_GetWindowID(parent) : 0, _gfxW, _gfxH, fullscreen ? 1 : 0);
+	         parent ? SDL_GetWindowID(parent) : 0, _gfxW, _gfxH, fullscreenPopup ? 1 : 0);
 	return true;
 }
 
@@ -798,7 +798,7 @@ bool SdlRailWindow::reconcile(SDL_Window* parent, const SDL_Rect& parentRect)
 	 * For fixed-size windows without WS_THICKFRAME (e.g. splash banners, fixed dialogs),
 	 * pin min_size == max_size == current size so tiling WMs (like niri) treat them as fixed/floating. */
 	const bool wmOwnsGeometry =
-	    _localMoveActive || geometryFrozen() || _fullscreen;
+	    _localMoveActive || geometryFrozen() || _fullscreenPopup;
 	if ((_minMaxDirty || _geometryDirty) && !wmOwnsGeometry)
 	{
 		const SDL_Rect vis = targetOuterRect();
@@ -1139,7 +1139,7 @@ bool SdlRailWindow::paint(SDL_Surface* primary, SDL_PixelFormat fallbackFormat,
 			if (!railPlatformCaps().positionsReadable)
 				_needsFullBlit = true; /* Wayland applies move on next surface commit */
 		}
-		if ((!_isPopup && !_layered) || _fullscreen)
+		if ((!_isPopup && !_layered) || _fullscreenPopup)
 			_win->raise(); /* Bring app and fullscreen windows to front. */
 	}
 	return ok;

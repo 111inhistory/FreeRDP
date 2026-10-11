@@ -87,7 +87,7 @@ static bool adjoinsOutside(const SDL_Rect& popup, const SDL_Rect& win)
 /* Fullscreen popups (e.g. slide shows) act as toplevels and can parent popups. */
 static bool canParentPopup(const SdlRailWindow& w)
 {
-	return (!w.isPopup() || w.isFullscreen()) && (w.window() != nullptr);
+	return (!w.isPopup() || w.isFullscreenPopup()) && (w.window() != nullptr);
 }
 
 SdlRailWindow* SdlRail::resolveParent(uint64_t ownerId)
@@ -343,7 +343,8 @@ void SdlRail::handleFocus(SDL_WindowID id, bool gained)
 {
 	std::unique_lock lock(_windowsLock);
 	auto appWindow = getWindowBySdlId(id);
-	if (!appWindow || (appWindow->isPopup() && !appWindow->isFullscreen()) || !appWindow->window())
+	if (!appWindow || (appWindow->isPopup() && !appWindow->isFullscreenPopup()) ||
+	    !appWindow->window())
 		return;
 
 	/* Ignore focus loss while dragging: mapping restore shadow frames can steal focus
@@ -408,7 +409,8 @@ void SdlRail::ensureActive(SDL_WindowID id)
 {
 	std::unique_lock lock(_windowsLock);
 	auto* appWindow = getWindowBySdlId(id);
-	if (!appWindow || (appWindow->isPopup() && !appWindow->isFullscreen()) || !appWindow->window())
+	if (!appWindow || (appWindow->isPopup() && !appWindow->isFullscreenPopup()) ||
+	    !appWindow->window())
 		return;
 
 	const auto wid = static_cast<uint32_t>(appWindow->id());
@@ -429,7 +431,7 @@ bool SdlRail::translateToServer(SDL_WindowID id, float& x, float& y, Uint32 even
 		(void)SDL_RenderCoordinatesFromWindow(renderer, x, y, &rpos.x, &rpos.y);
 	/* Window-local to server-absolute, aligned with surface blit anchor. */
 	SDL_Point origin = appWindow->serverOrigin();
-	if (appWindow->isPopup() && !appWindow->isFullscreen())
+	if (appWindow->isPopup() && !appWindow->isFullscreenPopup())
 	{
 		/* Popup moves are asynchronous on Wayland. Input is relative to the configured
 		 * SDL position, not the newest server rect: adding the latter during a drag
@@ -456,7 +458,7 @@ bool SdlRail::translateToServer(SDL_WindowID id, float& x, float& y, Uint32 even
 	const SDL_MouseButtonFlags buttonFlag =
 	    (button > 0 && button <= 32) ? SDL_BUTTON_MASK(button) : 0;
 	if (railPlatformCaps().popupGrabUsesPressOrigin && appWindow->isPopup() &&
-	    !appWindow->isFullscreen())
+	    !appWindow->isFullscreenPopup())
 	{
 		if ((eventType == SDL_EVENT_MOUSE_BUTTON_DOWN) && buttonFlag)
 		{
