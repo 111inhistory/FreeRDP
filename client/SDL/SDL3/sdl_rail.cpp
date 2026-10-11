@@ -87,7 +87,7 @@ static bool adjoinsOutside(const SDL_Rect& popup, const SDL_Rect& win)
 /* Fullscreen popups (e.g. slide shows) act as toplevels and can parent popups. */
 static bool canParentPopup(const SdlRailWindow& w)
 {
-	return (!w.isPopup() || w.isFullscreen()) && (w.window() != nullptr);
+	return (!w.isPopup() || w.isFullscreenPopup()) && (w.window() != nullptr);
 }
 
 SdlRailWindow* SdlRail::resolveParent(uint64_t ownerId)
@@ -343,7 +343,8 @@ void SdlRail::handleFocus(SDL_WindowID id, bool gained)
 {
 	std::unique_lock lock(_windowsLock);
 	auto appWindow = getWindowBySdlId(id);
-	if (!appWindow || (appWindow->isPopup() && !appWindow->isFullscreen()) || !appWindow->window())
+	if (!appWindow || (appWindow->isPopup() && !appWindow->isFullscreenPopup()) ||
+	    !appWindow->window())
 		return;
 
 	/* Ignore focus loss while dragging: mapping restore shadow frames can steal focus
@@ -408,7 +409,8 @@ void SdlRail::ensureActive(SDL_WindowID id)
 {
 	std::unique_lock lock(_windowsLock);
 	auto* appWindow = getWindowBySdlId(id);
-	if (!appWindow || (appWindow->isPopup() && !appWindow->isFullscreen()) || !appWindow->window())
+	if (!appWindow || (appWindow->isPopup() && !appWindow->isFullscreenPopup()) ||
+	    !appWindow->window())
 		return;
 
 	const auto wid = static_cast<uint32_t>(appWindow->id());
@@ -417,7 +419,8 @@ void SdlRail::ensureActive(SDL_WindowID id)
 	sendClientActivate(wid, true);
 }
 
-bool SdlRail::translateToServer(SDL_WindowID id, float& x, float& y)
+bool SdlRail::translateToServer(SDL_WindowID id, float& x, float& y, Uint32 eventType,
+                                Uint8 button)
 {
 	std::unique_lock lock(_windowsLock);
 	auto* appWindow = getWindowBySdlId(id);
@@ -428,7 +431,7 @@ bool SdlRail::translateToServer(SDL_WindowID id, float& x, float& y)
 		(void)SDL_RenderCoordinatesFromWindow(renderer, x, y, &rpos.x, &rpos.y);
 	/* Window-local to server-absolute, aligned with surface blit anchor. */
 	SDL_Point origin = appWindow->serverOrigin();
-	if (appWindow->isPopup() && !appWindow->isFullscreen())
+	if (appWindow->isPopup() && !appWindow->isFullscreenPopup())
 	{
 		/* Popup moves are asynchronous on Wayland. Input is relative to the configured
 		 * SDL position, not the newest server rect: adding the latter during a drag
@@ -437,7 +440,9 @@ bool SdlRail::translateToServer(SDL_WindowID id, float& x, float& y)
 		auto* parent = parentWindow ? getWindowBySdlId(SDL_GetWindowID(parentWindow)) : nullptr;
 		int px = 0;
 		int py = 0;
-		if (parent && SDL_GetWindowPosition(appWindow->window(), &px, &py))
+		if (parent &&
+		    (sdl_wayland_subsurface_get_position(appWindow->window(), &px, &py) ||
+		     SDL_GetWindowPosition(appWindow->window(), &px, &py)))
 		{
 			const SDL_Rect parentRect = parent->outerRect();
 			const SDL_Point rel = parent->toServer(SDL_Point{ px, py });
@@ -445,6 +450,31 @@ bool SdlRail::translateToServer(SDL_WindowID id, float& x, float& y)
 			origin.x += parentRect.x + rel.x - serverRect.x;
 			origin.y += parentRect.y + rel.y - serverRect.y;
 		}
+	}
+	/* Niri's implicit ClickGrab (26.04 / Smithay ff5fa7df) keeps the surface origin
+	 * from button-down, even when the client moves the surface. Match that coordinate
+	 * frame until all buttons are released; using the new origin feeds movement back
+	 * into the next pointer event. This is not an extra DPI conversion. */
+	const SDL_MouseButtonFlags buttonFlag =
+	    (button > 0 && button <= 32) ? SDL_BUTTON_MASK(button) : 0;
+	if (railPlatformCaps().popupGrabUsesPressOrigin && appWindow->isPopup() &&
+	    !appWindow->isFullscreenPopup())
+	{
+		if ((eventType == SDL_EVENT_MOUSE_BUTTON_DOWN) && buttonFlag)
+		{
+			if ((_popupPointerGrab.id != appWindow->id()) || !_popupPointerGrab.buttons)
+				_popupPointerGrab = { appWindow->id(), origin, 0 };
+			_popupPointerGrab.buttons |= buttonFlag;
+		}
+		if ((_popupPointerGrab.id == appWindow->id()) && _popupPointerGrab.buttons)
+			origin = _popupPointerGrab.origin;
+	}
+	/* Button-up still uses the grab origin above; only subsequent hover uses live geometry. */
+	if ((eventType == SDL_EVENT_MOUSE_BUTTON_UP) && buttonFlag)
+	{
+		_popupPointerGrab.buttons &= ~buttonFlag;
+		if (!_popupPointerGrab.buttons)
+			_popupPointerGrab = {};
 	}
 	x = rpos.x + static_cast<float>(origin.x);
 	y = rpos.y + static_cast<float>(origin.y);
@@ -654,10 +684,15 @@ bool SdlRail::paint(SDL_Surface* primary, SDL_PixelFormat fallbackFormat,
 			parent = chosen->window();
 			parentRect = chosen->outerRect(); /* the SDL window's on-screen geometry */
 		}
+		const bool wasMapped = popup.window() &&
+		                       ((SDL_GetWindowFlags(popup.window()) & SDL_WINDOW_HIDDEN) == 0);
 		popup.paint(primary, fallbackFormat, damage, parent, parentRect);
+		if (!wasMapped && popup.window() &&
+		    ((SDL_GetWindowFlags(popup.window()) & SDL_WINDOW_HIDDEN) == 0))
+			_zOrderDirty = true;
 	}
 
-	/* All live windows now have real X11 handles: realize the server's z-order. */
+	/* Realize the server's z-order after windows/surfaces exist. */
 	applyZOrder();
 	return true;
 }
@@ -667,7 +702,22 @@ void SdlRail::applyZOrder()
 {
 	if (!_zOrderDirty)
 		return;
-	/* X11 only: Wayland/Win/macOS have no reparenting-safe, focus-neutral restack path here. */
+	if (sdl::utils::isWaylandDriver())
+	{
+		/* Server order is topmost first. Inserting each subsurface immediately above its
+		 * parent in that order leaves higher siblings above lower ones, without focus grabs.
+		 * This cannot reorder unrelated toplevels; the compositor still owns their order. */
+		for (uint32_t id : _zOrder)
+		{
+			auto* w = getWindow(id);
+			if (w && w->window() &&
+			    ((SDL_GetWindowFlags(w->window()) & SDL_WINDOW_HIDDEN) == 0))
+				std::ignore = sdl_wayland_subsurface_stack_above_parent(w->window());
+		}
+		_zOrderDirty = false;
+		return;
+	}
+	/* Other platforms need a reparenting-safe, focus-neutral restack path. */
 	if (!railPlatformCaps().supportsRestack)
 	{
 		_zOrderDirty = false;
@@ -810,6 +860,7 @@ bool SdlRail::uninit(WINPR_ATTR_UNUSED RailClientContext* rail)
 	_refreshSent = false;
 	/* Reset session and move state on reconnect. */
 	_localMove = {};
+	_popupPointerGrab = {};
 	_sessionMargins = {};
 	_sentWorkArea = {};
 	_clientActiveId = 0;
@@ -1850,6 +1901,8 @@ BOOL SdlRail::window_delete(rdpContext* context, const WINDOW_ORDER_INFO* orderI
 	}
 
 	/* Clear cached references to deleted window id. */
+	if (rail->_popupPointerGrab.id == orderInfo->windowId)
+		rail->_popupPointerGrab = {};
 	if (rail->_localMove.id == orderInfo->windowId)
 		rail->_localMove = {};
 	if (rail->_clientActiveId == orderInfo->windowId)

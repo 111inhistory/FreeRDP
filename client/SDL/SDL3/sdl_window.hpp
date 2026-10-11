@@ -34,7 +34,7 @@ class SdlWindow
 	/* Create at an explicit position+size (RAIL windows: server-driven geometry). */
 	[[nodiscard]] static SdlWindow create(SDL_DisplayID id, const std::string& title, Uint32 flags,
 	                                      const SDL_Rect& rect);
-	/* Popup: no taskbar entry, no keyboard focus, Wayland-positionable (xdg_popup). */
+	/* Popup: no taskbar entry or keyboard focus; experimental wl_subsurface on Wayland. */
 	[[nodiscard]] static SdlWindow createPopup(SDL_Window* parent, const SDL_Rect& rect,
 	                                           bool transparent, bool tooltip = false);
 	[[nodiscard]] static rdpMonitor query(SDL_DisplayID id, bool forceAsPrimary = false);
@@ -69,6 +69,8 @@ class SdlWindow
 	[[nodiscard]] bool grabMouse(bool enable);
 	void setBordered(bool bordered);
 	void raise();
+	bool setPosition(int x, int y);
+	void hide();
 	void resizeable(bool use);
 	void fullscreen(bool enter, bool forceOriginalDisplay);
 	void minimize();

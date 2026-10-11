@@ -1,6 +1,6 @@
 /**
  * FreeRDP: A Remote Desktop Protocol Implementation
- * SDL3 Client - native Wayland interactive window move
+ * SDL3 Client - native Wayland surface roles and window operations
  *
  * Copyright 2026 Ibrahim Sevinc <ibrahim.sevinc.mail@gmail.com>
  *
@@ -28,7 +28,173 @@
 #include <wayland-client.h>
 #include "xdg-shell-client-protocol.h"
 
-/* Dedicated seat/pointer on private queue to track configure serials independently of SDL. */
+namespace
+{
+constexpr const char* kSubsurface = "FreeRDP.wayland.subsurface";
+struct Subsurface
+{
+	wl_display* display;
+	wl_surface* surface;
+	wl_surface* parent;
+	wl_subsurface* role;
+	int x;
+	int y;
+};
+
+Subsurface* subsurface(SDL_Window* window)
+{
+	return window ? static_cast<Subsurface*>(
+	                    SDL_GetPointerProperty(SDL_GetWindowProperties(window), kSubsurface, nullptr))
+	              : nullptr;
+}
+
+void subcompositor_global(void* data, wl_registry* registry, uint32_t name,
+                         const char* iface, uint32_t version)
+{
+	auto** manager = static_cast<wl_subcompositor**>(data);
+	if (!*manager && (strcmp(iface, wl_subcompositor_interface.name) == 0) && version >= 1)
+		*manager = static_cast<wl_subcompositor*>(
+		    wl_registry_bind(registry, name, &wl_subcompositor_interface, 1));
+}
+void subcompositor_removed(WINPR_ATTR_UNUSED void* data, WINPR_ATTR_UNUSED wl_registry* registry,
+                          WINPR_ATTR_UNUSED uint32_t name)
+{
+}
+/* Subsurface position/z-order and the owner's geometry take effect in the same
+ * parent commit. Keep their ordering here; child buffers remain desynchronized. */
+void commit_subsurface_parent(SDL_Window* parent, const Subsurface& ctx)
+{
+	sdl_wayland_set_window_geometry(parent);
+	wl_surface_commit(ctx.parent);
+	wl_display_flush(ctx.display);
+}
+} // namespace
+
+void sdl_wayland_set_window_geometry(SDL_Window* window)
+{
+	if (!window || !sdl::utils::isWaylandDriver())
+		return;
+	/* RAIL owns borderless surfaces; leave decorated/libdecor geometry to SDL. */
+	if ((SDL_GetWindowFlags(window) & SDL_WINDOW_BORDERLESS) == 0)
+		return;
+	const auto props = SDL_GetWindowProperties(window);
+	auto* shell = static_cast<xdg_surface*>(
+	    SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WAYLAND_XDG_SURFACE_POINTER, nullptr));
+	if (!shell || !SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WAYLAND_XDG_TOPLEVEL_POINTER,
+	                                     nullptr))
+		return; /* Hidden/unrealized windows and custom subsurface roles have no toplevel. */
+	int w = 0;
+	int h = 0;
+	if (!SDL_GetWindowSize(window, &w, &h) || w <= 0 || h <= 0)
+		return;
+	/* Without explicit geometry, xdg-shell uses the union of the surface tree.
+	 * An out-of-bounds tooltip/menu must not move or resize the owner's WM tile.
+	 * SDL window coordinates are logical here, not the high-DPI buffer dimensions. */
+	xdg_surface_set_window_geometry(shell, 0, 0, w, h);
+}
+
+bool sdl_wayland_subsurface_create(SDL_Window* window, SDL_Window* parent, int x, int y)
+{
+	const auto props = SDL_GetWindowProperties(window);
+	const auto parentProps = SDL_GetWindowProperties(parent);
+	auto* display = static_cast<wl_display*>(
+	    SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WAYLAND_DISPLAY_POINTER, nullptr));
+	auto* surface = static_cast<wl_surface*>(
+	    SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WAYLAND_SURFACE_POINTER, nullptr));
+	auto* parentSurface = static_cast<wl_surface*>(
+	    SDL_GetPointerProperty(parentProps, SDL_PROP_WINDOW_WAYLAND_SURFACE_POINTER, nullptr));
+	if (!display || !surface || !parentSurface)
+		return SDL_SetError("Missing Wayland surface for RAIL subsurface");
+
+	wl_subcompositor* manager = nullptr;
+	auto* registry = wl_display_get_registry(display);
+	if (!registry)
+		return false;
+	const wl_registry_listener listener = { subcompositor_global, subcompositor_removed };
+	wl_registry_add_listener(registry, &listener, &manager);
+	const int result = wl_display_roundtrip(display);
+	wl_registry_destroy(registry);
+	if (result < 0 || !manager)
+	{
+		if (manager)
+			wl_subcompositor_destroy(manager);
+		return SDL_SetError("Wayland compositor has no wl_subcompositor");
+	}
+	auto* role = wl_subcompositor_get_subsurface(manager, surface, parentSurface);
+	wl_subcompositor_destroy(manager);
+	if (!role)
+		return false;
+	auto* ctx = new Subsurface{ display, surface, parentSurface, role, x, y };
+	if (!SDL_SetPointerProperty(props, kSubsurface, ctx))
+	{
+		wl_subsurface_destroy(role);
+		delete ctx;
+		return false;
+	}
+	/* Independent GFX updates need not wait for an owner repaint. Positions and stacking
+	 * remain parent-commit state, so explicitly commit the parent after changing them. */
+	wl_subsurface_set_desync(role);
+	wl_subsurface_set_position(role, x, y);
+	commit_subsurface_parent(parent, *ctx);
+	return true;
+}
+
+void sdl_wayland_subsurface_destroy(SDL_Window* window)
+{
+	if (auto* ctx = subsurface(window))
+	{
+		wl_subsurface_destroy(ctx->role);
+		SDL_ClearProperty(SDL_GetWindowProperties(window), kSubsurface);
+		delete ctx;
+	}
+}
+
+bool sdl_wayland_subsurface_position(SDL_Window* window, int x, int y)
+{
+	auto* ctx = subsurface(window);
+	if (!ctx)
+		return false;
+	ctx->x = x;
+	ctx->y = y;
+	wl_subsurface_set_position(ctx->role, x, y);
+	commit_subsurface_parent(SDL_GetWindowParent(window), *ctx);
+	return true;
+}
+
+bool sdl_wayland_subsurface_get_position(SDL_Window* window, int* x, int* y)
+{
+	auto* ctx = subsurface(window);
+	if (!ctx)
+		return false;
+	if (x)
+		*x = ctx->x;
+	if (y)
+		*y = ctx->y;
+	return true;
+}
+
+void sdl_wayland_subsurface_hide(SDL_Window* window)
+{
+	if (auto* ctx = subsurface(window))
+	{
+		/* SDL_HideWindow is a no-op for custom Wayland roles. */
+		wl_surface_attach(ctx->surface, nullptr, 0, 0);
+		wl_surface_commit(ctx->surface);
+		wl_display_flush(ctx->display);
+	}
+}
+
+bool sdl_wayland_subsurface_stack_above_parent(SDL_Window* window)
+{
+	auto* ctx = subsurface(window);
+	if (!ctx)
+		return false;
+	wl_subsurface_place_above(ctx->role, ctx->parent);
+	commit_subsurface_parent(SDL_GetWindowParent(window), *ctx);
+	return true;
+}
+
+/* Dedicated seat/pointer on private queue to track button serials independently of SDL. */
 struct WlMoveCtx
 {
 	wl_display* display = nullptr;
@@ -212,6 +378,33 @@ bool sdl_wayland_begin_resize(SDL_Window* window, uint32_t xdgEdge)
 }
 
 #else /* !WITH_SDL_WAYLAND_NATIVE */
+
+void sdl_wayland_set_window_geometry(SDL_Window*)
+{
+}
+
+bool sdl_wayland_subsurface_create(SDL_Window*, SDL_Window*, int, int)
+{
+	return false;
+}
+void sdl_wayland_subsurface_destroy(SDL_Window*)
+{
+}
+bool sdl_wayland_subsurface_position(SDL_Window*, int, int)
+{
+	return false;
+}
+bool sdl_wayland_subsurface_get_position(SDL_Window*, int*, int*)
+{
+	return false;
+}
+void sdl_wayland_subsurface_hide(SDL_Window*)
+{
+}
+bool sdl_wayland_subsurface_stack_above_parent(SDL_Window*)
+{
+	return false;
+}
 
 void sdl_wayland_move_prepare(WINPR_ATTR_UNUSED SDL_Window* window)
 {

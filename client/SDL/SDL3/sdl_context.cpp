@@ -1321,7 +1321,7 @@ bool SdlContext::handleEvent(const SDL_MouseButtonEvent& ev)
 			_rail.ensureActive(ev.windowID);
 		if (suppress)
 			return true;
-		if (_rail.translateToServer(ev.windowID, copy.button.x, copy.button.y))
+		if (_rail.translateToServer(ev.windowID, copy.button.x, copy.button.y, ev.type, ev.button))
 		{
 			/* Record the forwarded left press: it is the anchor of any server modal move/size
 			 * loop this press starts (the loop moves the window by release - anchor). */

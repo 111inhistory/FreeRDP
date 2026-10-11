@@ -344,10 +344,10 @@ bool SdlRailWindow::isPopup() const
 	return _isPopup;
 }
 
-bool SdlRailWindow::isFullscreen() const
+bool SdlRailWindow::isFullscreenPopup() const
 {
 	std::unique_lock lock(_gfxLock);
-	return _fullscreen;
+	return _fullscreenPopup;
 }
 
 bool SdlRailWindow::isLayered() const
@@ -425,8 +425,13 @@ static SDL_Rect stripInsets(const SDL_Rect& r, const SDL_Rect& i)
 bool SdlRailWindow::isFullDisplaySize() const
 {
 	SDL_Rect disp{};
-	return SDL_GetDisplayBounds(SDL_GetPrimaryDisplay(), &disp) && (_windowRect.w >= disp.w) &&
-	       (_windowRect.h >= disp.h);
+	if (!SDL_GetDisplayBounds(SDL_GetPrimaryDisplay(), &disp))
+		return false;
+	/* Display bounds are SDL logical coordinates; WINDOW_ORDER dimensions are server
+	 * pixels. Compare in the same coordinate space, including before the SDL window
+	 * exists. Otherwise, e.g. an 1810x1200 dialog passes a 1600x1000 check at 200%. */
+	const SDL_Rect serverDisplay = toServer(disp);
+	return (_windowRect.w >= serverDisplay.w) && (_windowRect.h >= serverDisplay.h);
 }
 
 /* Server rect inflated by the FRESH band insets (the target the window should become); caller
@@ -624,17 +629,20 @@ bool SdlRailWindow::create(SDL_Window* parent, const SDL_Rect& parentRect)
 	const SDL_Rect vis = targetOuterRect();
 	_appliedInsets = bandInsets(); /* the insets baked into the window we are about to create */
 	const SDL_Rect localVis = toLocal(vis);
-	/* Realize full-display popups as fullscreen toplevels on Wayland. */
-	const bool fullscreen = _isPopup && !caps.positionsReadable && isFullDisplaySize();
-	if (_isPopup && parent && !fullscreen)
+	/* Only parentless, unowned full-display popups may become fullscreen toplevels.
+	 * An owned/fallback-parented dialog must retain its popup role, even if its
+	 * initial WINDOW_ORDER geometry temporarily spans the display. */
+	const bool fullscreenPopup = _isPopup && (_ownerId == 0) && !parent &&
+	                             !caps.positionsReadable && isFullDisplaySize();
+	if (_isPopup && parent)
 	{
-		/* SDL popups position parent-relative (works on Wayland too, via xdg_popup). */
+		/* Popups position parent-relative (wl_subsurface in the Wayland experiment). */
 		const SDL_Rect rel = { vis.x - parentRect.x, vis.y - parentRect.y, vis.w, vis.h };
 		const SDL_Rect localRel = toLocal(rel);
 		_win = std::make_unique<SdlWindow>(
 		    SdlWindow::createPopup(parent, localRel, caps.supportsTransparentWindows, _overlay));
 	}
-	else if (_isPopup && !caps.positionsReadable && !fullscreen)
+	else if (_isPopup && !caps.positionsReadable && !fullscreenPopup)
 	{
 		/* No owner yet: a Wayland popup needs a parent; retry once an app window exists. */
 		WLog_VRB(TAG, "popup create deferred id=0x%08" PRIx32 ": no parent yet",
@@ -652,7 +660,7 @@ bool SdlRailWindow::create(SDL_Window* parent, const SDL_Rect& parentRect)
 		_win = std::make_unique<SdlWindow>(
 		    SdlWindow::create(SDL_GetPrimaryDisplay(), _title, flags, localVis));
 	}
-	if (!_win || !_win->window() || !_win->renderer())
+	if (!_win->window() || !_win->renderer())
 	{
 		_win.reset();
 		WLog_WARN(TAG, "create failed id=0x%08" PRIx32 " %s", static_cast<uint32_t>(_id), role());
@@ -664,10 +672,10 @@ bool SdlRailWindow::create(SDL_Window* parent, const SDL_Rect& parentRect)
 		SDL_SetWindowMinimumSize(_win->window(), localVis.w, localVis.h);
 		SDL_SetWindowMaximumSize(_win->window(), localVis.w, localVis.h);
 	}
-	if (fullscreen)
+	if (fullscreenPopup)
 	{
 		/* Cover the whole output (panel included) - the Wayland-correct way to reach 0,0. */
-		_fullscreen = true;
+		_fullscreenPopup = true;
 		SDL_SetWindowFullscreen(_win->window(), true);
 		WLog_DBG(TAG, "fullscreen id=0x%08" PRIx32 " %dx%d (WS_POPUP spans display)",
 		         static_cast<uint32_t>(_id), _windowRect.w, _windowRect.h);
@@ -679,10 +687,12 @@ bool SdlRailWindow::create(SDL_Window* parent, const SDL_Rect& parentRect)
 
 	WLog_DBG(TAG,
 	         "create id=0x%08" PRIx32 " sdl=%" PRIu32 " %s vis=%dx%d+%d+%d margins=L%d,T%d,R%d,B%d "
-	         "transparent=%d",
+	         "transparent=%d owner=0x%08" PRIx32 " parent=%" PRIu32 " gfx=%" PRIu32 "x%" PRIu32
+	         " fullscreen=%d",
 	         static_cast<uint32_t>(_id), static_cast<uint32_t>(_win->id()), role(), vis.w, vis.h,
 	         vis.x, vis.y, _resizeMargins.x, _resizeMargins.y, _resizeMargins.w, _resizeMargins.h,
-	         caps.supportsTransparentWindows ? 1 : 0);
+	         caps.supportsTransparentWindows ? 1 : 0, static_cast<uint32_t>(_ownerId),
+	         parent ? SDL_GetWindowID(parent) : 0, _gfxW, _gfxH, fullscreenPopup ? 1 : 0);
 	return true;
 }
 
@@ -718,7 +728,7 @@ bool SdlRailWindow::reconcile(SDL_Window* parent, const SDL_Rect& parentRect)
 			if ((SDL_GetWindowFlags(_win->window()) & SDL_WINDOW_HIDDEN) == 0)
 			{
 				WLog_DBG(TAG, "hide id=0x%08" PRIx32 " %s", static_cast<uint32_t>(_id), role());
-				SDL_HideWindow(_win->window());
+				_win->hide();
 			}
 			_mapped = false;
 		}
@@ -788,7 +798,7 @@ bool SdlRailWindow::reconcile(SDL_Window* parent, const SDL_Rect& parentRect)
 	 * For fixed-size windows without WS_THICKFRAME (e.g. splash banners, fixed dialogs),
 	 * pin min_size == max_size == current size so tiling WMs (like niri) treat them as fixed/floating. */
 	const bool wmOwnsGeometry =
-	    _localMoveActive || geometryFrozen() || _fullscreen;
+	    _localMoveActive || geometryFrozen() || _fullscreenPopup;
 	if ((_minMaxDirty || _geometryDirty) && !wmOwnsGeometry)
 	{
 		const SDL_Rect vis = targetOuterRect();
@@ -834,7 +844,7 @@ bool SdlRailWindow::reconcile(SDL_Window* parent, const SDL_Rect& parentRect)
 		{
 			const SDL_Rect rel = { vis.x - parentRect.x, vis.y - parentRect.y, vis.w, vis.h };
 			const SDL_Rect localRel = toLocal(rel);
-			if (!SDL_SetWindowPosition(_win->window(), localRel.x, localRel.y))
+			if (!_win->setPosition(localRel.x, localRel.y))
 				WLog_VRB(TAG, "popup reposition unsupported id=0x%08" PRIx32 ": %s",
 				         static_cast<uint32_t>(_id), SDL_GetError());
 			else if (!railPlatformCaps().positionsReadable)
@@ -1125,11 +1135,11 @@ bool SdlRailWindow::paint(SDL_Surface* primary, SDL_PixelFormat fallbackFormat,
 			const SDL_Rect vis = targetOuterRect();
 			const SDL_Rect rel = { vis.x - parentRect.x, vis.y - parentRect.y, vis.w, vis.h };
 			const SDL_Rect localRel = toLocal(rel);
-			SDL_SetWindowPosition(_win->window(), localRel.x, localRel.y);
+			_win->setPosition(localRel.x, localRel.y);
 			if (!railPlatformCaps().positionsReadable)
 				_needsFullBlit = true; /* Wayland applies move on next surface commit */
 		}
-		if ((!_isPopup && !_layered) || _fullscreen)
+		if ((!_isPopup && !_layered) || _fullscreenPopup)
 			_win->raise(); /* Bring app and fullscreen windows to front. */
 	}
 	return ok;
