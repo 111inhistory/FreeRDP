@@ -427,7 +427,25 @@ bool SdlRail::translateToServer(SDL_WindowID id, float& x, float& y)
 	if (auto* renderer = appWindow->renderer())
 		(void)SDL_RenderCoordinatesFromWindow(renderer, x, y, &rpos.x, &rpos.y);
 	/* Window-local to server-absolute, aligned with surface blit anchor. */
-	const SDL_Point origin = appWindow->serverOrigin();
+	SDL_Point origin = appWindow->serverOrigin();
+	if (appWindow->isPopup() && !appWindow->isFullscreen())
+	{
+		/* Popup moves are asynchronous on Wayland. Input is relative to the configured
+		 * SDL position, not the newest server rect: adding the latter during a drag
+		 * feeds the server's movement back into the next pointer position. */
+		SDL_Window* parentWindow = SDL_GetWindowParent(appWindow->window());
+		auto* parent = parentWindow ? getWindowBySdlId(SDL_GetWindowID(parentWindow)) : nullptr;
+		int px = 0;
+		int py = 0;
+		if (parent && SDL_GetWindowPosition(appWindow->window(), &px, &py))
+		{
+			const SDL_Rect parentRect = parent->outerRect();
+			const SDL_Point rel = parent->toServer(SDL_Point{ px, py });
+			const SDL_Rect serverRect = appWindow->windowRect();
+			origin.x += parentRect.x + rel.x - serverRect.x;
+			origin.y += parentRect.y + rel.y - serverRect.y;
+		}
+	}
 	x = rpos.x + static_cast<float>(origin.x);
 	y = rpos.y + static_cast<float>(origin.y);
 	return true;
