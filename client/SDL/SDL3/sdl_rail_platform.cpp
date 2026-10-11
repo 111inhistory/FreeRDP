@@ -29,6 +29,12 @@ static RailPlatformCaps detectRailPlatformCaps()
 		caps.positionsReadable = false;
 		caps.supportsTransparentWindows = true;
 		caps.supportsRestack = false;
+		/* Niri 26.04's Smithay ClickGrab reports motion against the button-down origin.
+		 * Do not assume other Wayland compositors use the same grab coordinate frame. */
+		const char* desktop = SDL_getenv("XDG_CURRENT_DESKTOP");
+		const char* session = SDL_getenv("XDG_SESSION_DESKTOP");
+		caps.popupGrabUsesPressOrigin = (desktop && SDL_strstr(desktop, "niri")) ||
+		                               (session && SDL_strcmp(session, "niri") == 0);
 	}
 	else
 	{

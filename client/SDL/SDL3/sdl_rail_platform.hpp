@@ -26,6 +26,7 @@ struct RailPlatformCaps
 	bool positionsReadable = true;
 	bool supportsTransparentWindows = true;
 	bool supportsRestack = false;
+	bool popupGrabUsesPressOrigin = false; /* Niri implicit ClickGrab coordinates */
 };
 
 /* Detected capabilities of the running SDL video backend (cached). */

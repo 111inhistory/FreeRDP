@@ -92,7 +92,8 @@ class SdlRail
 	/* Activate window on server if not already active. */
 	void ensureActive(SDL_WindowID id);
 	/* Rewrite window-local (x,y) to server-absolute; false if id is not a RAIL window. */
-	bool translateToServer(SDL_WindowID id, float& x, float& y);
+	bool translateToServer(SDL_WindowID id, float& x, float& y, Uint32 eventType = 0,
+	                       Uint8 button = 0);
 	/* Record position of last left button-down. */
 	void noteLeftPress(float x, float y)
 	{
@@ -230,6 +231,14 @@ class SdlRail
 		SDL_Point wmSize = { 0, 0 };
 	};
 	LocalMove _localMove;
+	/* Coordinate frame of Niri's implicit pointer grab (guarded by _windowsLock). */
+	struct PopupPointerGrab
+	{
+		uint64_t id = 0; /* RAIL window id; also safe to clear from server callbacks */
+		SDL_Point origin = { 0, 0 };
+		SDL_MouseButtonFlags buttons = 0;
+	};
+	PopupPointerGrab _popupPointerGrab;
 	/* Last focused app window ID. */
 	uint64_t _focusedAppId = 0;
 	/* Server-driven z-order list. */

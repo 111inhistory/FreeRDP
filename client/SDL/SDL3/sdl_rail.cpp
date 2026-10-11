@@ -417,7 +417,8 @@ void SdlRail::ensureActive(SDL_WindowID id)
 	sendClientActivate(wid, true);
 }
 
-bool SdlRail::translateToServer(SDL_WindowID id, float& x, float& y)
+bool SdlRail::translateToServer(SDL_WindowID id, float& x, float& y, Uint32 eventType,
+                                Uint8 button)
 {
 	std::unique_lock lock(_windowsLock);
 	auto* appWindow = getWindowBySdlId(id);
@@ -447,6 +448,31 @@ bool SdlRail::translateToServer(SDL_WindowID id, float& x, float& y)
 			origin.x += parentRect.x + rel.x - serverRect.x;
 			origin.y += parentRect.y + rel.y - serverRect.y;
 		}
+	}
+	/* Niri's implicit ClickGrab (26.04 / Smithay ff5fa7df) keeps the surface origin
+	 * from button-down, even when the client moves the surface. Match that coordinate
+	 * frame until all buttons are released; using the new origin feeds movement back
+	 * into the next pointer event. This is not an extra DPI conversion. */
+	const SDL_MouseButtonFlags buttonFlag =
+	    (button > 0 && button <= 32) ? SDL_BUTTON_MASK(button) : 0;
+	if (railPlatformCaps().popupGrabUsesPressOrigin && appWindow->isPopup() &&
+	    !appWindow->isFullscreen())
+	{
+		if ((eventType == SDL_EVENT_MOUSE_BUTTON_DOWN) && buttonFlag)
+		{
+			if ((_popupPointerGrab.id != appWindow->id()) || !_popupPointerGrab.buttons)
+				_popupPointerGrab = { appWindow->id(), origin, 0 };
+			_popupPointerGrab.buttons |= buttonFlag;
+		}
+		if ((_popupPointerGrab.id == appWindow->id()) && _popupPointerGrab.buttons)
+			origin = _popupPointerGrab.origin;
+	}
+	/* Button-up still uses the grab origin above; only subsequent hover uses live geometry. */
+	if ((eventType == SDL_EVENT_MOUSE_BUTTON_UP) && buttonFlag)
+	{
+		_popupPointerGrab.buttons &= ~buttonFlag;
+		if (!_popupPointerGrab.buttons)
+			_popupPointerGrab = {};
 	}
 	x = rpos.x + static_cast<float>(origin.x);
 	y = rpos.y + static_cast<float>(origin.y);
@@ -832,6 +858,7 @@ bool SdlRail::uninit(WINPR_ATTR_UNUSED RailClientContext* rail)
 	_refreshSent = false;
 	/* Reset session and move state on reconnect. */
 	_localMove = {};
+	_popupPointerGrab = {};
 	_sessionMargins = {};
 	_sentWorkArea = {};
 	_clientActiveId = 0;
@@ -1872,6 +1899,8 @@ BOOL SdlRail::window_delete(rdpContext* context, const WINDOW_ORDER_INFO* orderI
 	}
 
 	/* Clear cached references to deleted window id. */
+	if (rail->_popupPointerGrab.id == orderInfo->windowId)
+		rail->_popupPointerGrab = {};
 	if (rail->_localMove.id == orderInfo->windowId)
 		rail->_localMove = {};
 	if (rail->_clientActiveId == orderInfo->windowId)
