@@ -437,7 +437,9 @@ bool SdlRail::translateToServer(SDL_WindowID id, float& x, float& y)
 		auto* parent = parentWindow ? getWindowBySdlId(SDL_GetWindowID(parentWindow)) : nullptr;
 		int px = 0;
 		int py = 0;
-		if (parent && SDL_GetWindowPosition(appWindow->window(), &px, &py))
+		if (parent &&
+		    (sdl_wayland_subsurface_get_position(appWindow->window(), &px, &py) ||
+		     SDL_GetWindowPosition(appWindow->window(), &px, &py)))
 		{
 			const SDL_Rect parentRect = parent->outerRect();
 			const SDL_Point rel = parent->toServer(SDL_Point{ px, py });
@@ -654,10 +656,15 @@ bool SdlRail::paint(SDL_Surface* primary, SDL_PixelFormat fallbackFormat,
 			parent = chosen->window();
 			parentRect = chosen->outerRect(); /* the SDL window's on-screen geometry */
 		}
+		const bool wasMapped = popup.window() &&
+		                       ((SDL_GetWindowFlags(popup.window()) & SDL_WINDOW_HIDDEN) == 0);
 		popup.paint(primary, fallbackFormat, damage, parent, parentRect);
+		if (!wasMapped && popup.window() &&
+		    ((SDL_GetWindowFlags(popup.window()) & SDL_WINDOW_HIDDEN) == 0))
+			_zOrderDirty = true;
 	}
 
-	/* All live windows now have real X11 handles: realize the server's z-order. */
+	/* Realize the server's z-order after windows/surfaces exist. */
 	applyZOrder();
 	return true;
 }
@@ -667,7 +674,22 @@ void SdlRail::applyZOrder()
 {
 	if (!_zOrderDirty)
 		return;
-	/* X11 only: Wayland/Win/macOS have no reparenting-safe, focus-neutral restack path here. */
+	if (sdl::utils::isWaylandDriver())
+	{
+		/* Server order is topmost first. Inserting each subsurface immediately above its
+		 * parent in that order leaves higher siblings above lower ones, without focus grabs.
+		 * This cannot reorder unrelated toplevels; the compositor still owns their order. */
+		for (uint32_t id : _zOrder)
+		{
+			auto* w = getWindow(id);
+			if (w && w->window() &&
+			    ((SDL_GetWindowFlags(w->window()) & SDL_WINDOW_HIDDEN) == 0))
+				std::ignore = sdl_wayland_subsurface_stack_above_parent(w->window());
+		}
+		_zOrderDirty = false;
+		return;
+	}
+	/* Other platforms need a reparenting-safe, focus-neutral restack path. */
 	if (!railPlatformCaps().supportsRestack)
 	{
 		_zOrderDirty = false;

@@ -23,6 +23,7 @@
 
 #include "sdl_window.hpp"
 #include "sdl_utils.hpp"
+#include "sdl_wayland.hpp"
 
 #include <freerdp/utils/string.h>
 
@@ -94,7 +95,23 @@ SdlWindow::~SdlWindow()
 	if (_renderer)
 		SDL_DestroyRenderer(_renderer);
 	if (_window)
+	{
+		sdl_wayland_subsurface_destroy(_window);
 		SDL_DestroyWindow(_window);
+	}
+}
+
+bool SdlWindow::setPosition(int x, int y)
+{
+	if (sdl_wayland_subsurface_position(_window, x, y))
+		return true;
+	return SDL_SetWindowPosition(_window, x, y);
+}
+
+void SdlWindow::hide()
+{
+	sdl_wayland_subsurface_hide(_window);
+	SDL_HideWindow(_window);
 }
 
 SDL_WindowID SdlWindow::id() const
@@ -719,7 +736,13 @@ SdlWindow SdlWindow::create(SDL_DisplayID id, const std::string& title, Uint32 f
 SdlWindow::SdlWindow(SDL_Window* parent, const SDL_Rect& rect, bool transparent, bool tooltip)
     : _initialW(rect.w), _initialH(rect.h)
 {
+	bool useSubsurface = false;
+#if defined(WITH_SDL_WAYLAND_NATIVE)
+	useSubsurface = sdl::utils::isWaylandDriver();
+#endif
 	auto props = SDL_CreateProperties();
+	SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_WAYLAND_SURFACE_ROLE_CUSTOM_BOOLEAN,
+	                       useSubsurface);
 	SDL_SetPointerProperty(props, SDL_PROP_WINDOW_CREATE_PARENT_POINTER, parent);
 	SDL_SetBooleanProperty(props,
 	                       tooltip ? SDL_PROP_WINDOW_CREATE_TOOLTIP_BOOLEAN
@@ -741,6 +764,12 @@ SdlWindow::SdlWindow(SDL_Window* parent, const SDL_Rect& rect, bool transparent,
 
 	_window = SDL_CreateWindowWithProperties(props);
 	SDL_DestroyProperties(props);
+	if (_window && useSubsurface &&
+	    !sdl_wayland_subsurface_create(_window, parent, rect.x, rect.y))
+	{
+		SDL_DestroyWindow(_window);
+		_window = nullptr;
+	}
 	if (_window)
 	{
 		std::ignore = SDL_SyncWindow(_window);

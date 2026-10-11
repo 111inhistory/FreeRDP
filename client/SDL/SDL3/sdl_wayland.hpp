@@ -20,6 +20,15 @@
 
 #include <SDL3/SDL.h>
 
+/* Experimental RAIL popup surfaces; SDL still owns rendering and input. */
+bool sdl_wayland_subsurface_create(SDL_Window* window, SDL_Window* parent, int x, int y);
+void sdl_wayland_subsurface_destroy(SDL_Window* window);
+bool sdl_wayland_subsurface_position(SDL_Window* window, int x, int y);
+bool sdl_wayland_subsurface_get_position(SDL_Window* window, int* x, int* y);
+void sdl_wayland_subsurface_hide(SDL_Window* window);
+/* Insert immediately above parent; apply sibling Z-order topmost first. */
+bool sdl_wayland_subsurface_stack_above_parent(SDL_Window* window);
+
 /* Native Wayland helpers for RAIL client interactive move/resize. */
 
 /* Bind the seat/pointer early (at window creation) or the first move's press serial is missed. */
